@@ -2,6 +2,7 @@ import rosbag
 from cv_bridge import CvBridge
 import matplotlib.pyplot as plt
 import scipy.interpolate as spi
+import scipy.signal as sps
 import numpy as np
 
 
@@ -32,10 +33,10 @@ class RkfAnalysis(object):
         self.as_time = np.array([])
         self.ang_pos = np.array([])
 
-        # Allocate data to numpy arrays
+        # Allocate and preprocess data arrays
         self._extract_data()
         self._calc_params()
-        self._create_var_dict()
+        self._resample_params()
 
     def _check_data(self):
 
@@ -48,6 +49,9 @@ class RkfAnalysis(object):
                 self.msg_count[topic] = self.bag.get_message_count(topic)
 
     def _extract_data(self):
+
+        if not self.data_is_valid:
+            raise ValueError("Required topic(s) not found in bag file")
 
         # Preallocate data arrays
         self.kf_time = np.zeros(self.msg_count["/kinefly/flystate"])
@@ -86,21 +90,26 @@ class RkfAnalysis(object):
 
     def _calc_params(self):
 
-        self.ang_vel = self.smooth_deriv(self.kf_time, self.resample(self.as_time, self.ang_pos, self.kf_time))
+        self.ang_vel = self.smooth_deriv(self.as_time, self.ang_pos)
         self.wing_diff = self.left_angle - self.right_angle
 
-    def _create_var_dict(self):
+    def _resample_params(self):
 
-        self.var_names = {"Kinefly Time": [self.kf_time, "deg"],
-                          "Left Wing Angle": [self.left_angle, "deg"],
-                          "Right Wing Angle": [self.right_angle, "deg"],
-                          "Head Angle": [self.head_angle, "deg"],
-                          "Abdomen Angle": [self.ab_angle, "deg"],
-                          "Wingbeat Difference": [self.wing_diff, "deg"],
-                          "Autostep Time": [self.as_time, "sec"],
-                          "Angular Position": [self.ang_pos, "deg"],
-                          "Angular Velocity": [self.ang_vel, "deg/s"]
-                          }
+        self.ang_pos = self.resample(self.as_time, self.ang_pos, self.kf_time)
+        self.ang_vel = self.resample(self.as_time, self.ang_vel, self.kf_time)
+
+    # def _create_var_dict(self):
+    #
+    #     self.var_names = {"Kinefly Time": [self.kf_time, "deg"],
+    #                       "Left Wing Angle": [self.left_angle, "deg"],
+    #                       "Right Wing Angle": [self.right_angle, "deg"],
+    #                       "Head Angle": [self.head_angle, "deg"],
+    #                       "Abdomen Angle": [self.ab_angle, "deg"],
+    #                       "Wingbeat Difference": [self.wing_diff, "deg"],
+    #                       "Autostep Time": [self.as_time, "sec"],
+    #                       "Angular Position": [self.ang_pos, "deg"],
+    #                       "Angular Velocity": [self.ang_vel, "deg/s"]
+    #                       }
 
     @staticmethod
     def resample(x1, y1, x2):
@@ -109,7 +118,27 @@ class RkfAnalysis(object):
         y2 = spline.__call__(x2, extrapolate=False)
         return y2
 
+    def pad_shift(self, x, dt):
+
+        dt = -dt
+        j = dt < 1
+        k = np.sign(dt)
+
+        y = np.pad(x, abs(dt), 'edge')
+        y = y[2*dt-j::k][::k]
+        return y
+
+    def xc_delay(self, x1, x2):
+
+        xc = sps.correlate(self.nan_interp(x1), self.nan_interp(x2))
+        m = np.argmax(xc)
+        l = len(xc)
+        dt = m - (l-1)/2
+
+        return dt
+
     def smooth_deriv(self, x, y, n=1, N=5):
+
         deriv = y.copy()
 
         # Calculate nth derivative
@@ -124,6 +153,7 @@ class RkfAnalysis(object):
         return deriv
 
     def sliding_average(self, x, N):
+
         assert N % 2 == 1
         vec = self.nan_interp(x)
         vec = np.cumsum(vec, dtype=float)
@@ -132,21 +162,27 @@ class RkfAnalysis(object):
         return np.pad(vec, (N-1)/2, "edge")
 
     def nan_interp(self, y):
-        nans, x = self.nan_helper(y)
+
+        nans, x = self._nan_helper(y)
         y[nans] = np.interp(x(nans), x(~nans), y[~nans])
         return y
 
     @staticmethod
-    def nan_helper(y):
+    def _nan_helper(y):
+
         return np.isnan(y), lambda z: z.nonzero()[0]
 
-    def plot_timecourse(self, x1, x2):
+    def plot_timecourse(self, x1, x2, xc=True):
+
+        if xc:
+            x2 = self.pad_shift(x2, self.xc_delay(x1, x2))
 
         fig = plt.figure()
         ax1 = fig.add_subplot(111)
         ax1.plot(self.kf_time - self.kf_time[0], x1)
+
         ax1.set_xlabel('Time (sec)')
-        ax1.set_ylabel('d/dt[Resampled Angular Position] (deg/s)')
+        ax1.set_ylabel('Angular Velocity (deg/s)')
 
         ax2 = ax1.twinx()
         ax2.plot(self.kf_time - self.kf_time[0], x2, 'r-')
@@ -154,15 +190,21 @@ class RkfAnalysis(object):
         for tl in ax2.get_yticklabels():
             tl.set_color('r')
 
+        # x2b = self.pad_shift(x2, self.xc_delay(x1, x2))
+        # ax2.plot(self.kf_time - self.kf_time[0], x2b, 'g-')
+
         plt.show()
 
-    def plot_correlation(self, x1, x2):
+    def plot_correlation(self, x1, x2, xc=True):
+
+        if xc:
+            x2 = self.pad_shift(x2, self.xc_delay(x1, x2))
 
         rng = np.bitwise_and(self.as_time[0] <= self.kf_time, self.kf_time <= self.as_time[-1])
 
         plt.figure()
         plt.scatter(x1[rng], x2[rng], c=rka.kf_time[rng]-rka.kf_time[rng][0])
-        plt.xlabel('d/dt[Resampled Angular Position] (deg/s)')
+        plt.xlabel('Angular Velocity (deg/s)')
         plt.ylabel('Wingbeat Difference (L-R)')
         cb = plt.colorbar()
         cb.set_label("Time (sec)")
@@ -170,9 +212,10 @@ class RkfAnalysis(object):
         plt.show()
 
     def default_plots(self):
+
         self.plot_timecourse(x1=self.ang_vel, x2=self.wing_diff)
         self.plot_correlation(x1=self.ang_vel, x2=self.wing_diff)
 
 
-rka = RkfAnalysis("/home/dickinsonlab/git/rkf_analysis/rosbag_data/2019-01-30-17-04-00.bag")
+rka = RkfAnalysis("/home/dickinsonlab/git/rkf_analysis/rosbag_data/2019-02-01-15-17-24.bag")
 rka.default_plots()
