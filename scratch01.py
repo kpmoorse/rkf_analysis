@@ -1,11 +1,18 @@
 import numpy as np
+import matplotlib.pyplot as plt
 
+t = np.arange(0, 100, 0.01)
+impulse = t*0
+for n in np.arange(1, 11):
+    impulse += np.sin(n*t)
+impulse += np.random.normal(0, 0.1, impulse.shape)
 
-class Variable(np.ndarray):
+# t = np.arange(0, 100, 0.01, dtype=float)
+# impulse = np.sin(np.pi*t/10)
 
-    def __new__(cls, array, dtype=None, order=None, **kwargs):
-        obj = np.asarray(array, dtype=dtype, order=order).view(cls)
-        obj.metadata = kwargs
-        return obj
+plt.plot(t, impulse)
+plt.xlim([0, 5])
 
-var = Variable([1,2,3,4], comment="testmeta")
+freq = np.fft.fft(impulse)
+plt.figure()
+plt.plot(abs(freq))

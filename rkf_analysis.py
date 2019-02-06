@@ -33,7 +33,7 @@ class RkfAnalysis(object):
 
         # Initialize data variables with metadata
         self.kf_time = Variable(np.zeros(self.msg_count["/kinefly/flystate"]),
-                                 name="Kinefly Time", units="sec")
+                                name="Kinefly Time", units="sec")
         self.kf_t0 = []
 
         self.left_angle = Variable(self.kf_time.copy(), name="Left Wing Angle", units="deg")
@@ -42,7 +42,7 @@ class RkfAnalysis(object):
         self.ab_angle = Variable(self.kf_time.copy(), name="Abdomen Angle", units="deg")
 
         self.as_time = Variable(np.zeros(self.msg_count["/autostep/motion_data"]),
-                                 name="Autostep Time", units="sec")
+                                name="Autostep Time", units="sec")
         self.ang_pos = self.as_time.copy()
         self.ang_vel = self.as_time.copy()
 
@@ -65,16 +65,6 @@ class RkfAnalysis(object):
 
         if not self.data_is_valid:
             raise ValueError("Required topic(s) not found in bag file")
-
-        # Preallocate data arrays
-        # self.kf_time = np.zeros(self.msg_count["/kinefly/flystate"])
-        # self.left_angle = self.kf_time.copy()
-        # self.right_angle = self.kf_time.copy()
-        # self.head_angle = self.kf_time.copy()
-        # self.ab_angle = self.kf_time.copy()
-
-        # self.as_time = np.zeros(self.msg_count["/autostep/motion_data"])
-        # self.ang_pos = self.as_time.copy()
 
         # Initialize counters
         ixkf = 0
@@ -104,6 +94,10 @@ class RkfAnalysis(object):
     def _calc_params(self):
 
         self.ang_vel[:] = self.smooth_deriv(self.as_time, self.ang_pos)
+        self.left_angle[:] = self.sliding_average(self.left_angle, 11)
+        self.right_angle[:] = self.sliding_average(self.right_angle, 11)
+        self.head_angle[:] = self.sliding_average(self.head_angle, 11)
+        self.ab_angle[:] = self.sliding_average(self.ab_angle, 11)
         self.wing_diff = Variable(self.left_angle - self.right_angle, name="Wingbeat Difference (L-R)", units="deg")
 
     def _resample_params(self):
@@ -118,7 +112,8 @@ class RkfAnalysis(object):
         y2 = spline.__call__(x2, extrapolate=False)
         return y2
 
-    def pad_shift(self, x, dt):
+    @staticmethod
+    def pad_shift(x, dt):
 
         dt = -dt
         j = dt < 1
@@ -131,6 +126,10 @@ class RkfAnalysis(object):
     def xc_delay(self, x1, x2):
 
         xc = sps.correlate(self.nan_interp(x1), self.nan_interp(x2))
+        envelope = np.arange(len(xc))
+        envelope = 1 - np.abs(envelope/envelope[-1] - 0.5)
+        xc = xc * envelope
+
         m = np.argmax(xc)
         l = len(xc)
         dt = m - (l-1)/2
@@ -174,8 +173,9 @@ class RkfAnalysis(object):
 
     def plot_timecourse(self, x1, x2, xcorr=True):
 
+        rng = np.bitwise_and(self.as_time[0] <= self.kf_time, self.kf_time <= self.as_time[-1])
         if xcorr:
-            x2 = Variable(self.pad_shift(x2.copy(), self.xc_delay(x1, x2)), name=x2.name, units=x2.units)
+            x2 = Variable(self.pad_shift(x2.copy(), self.xc_delay(x1[rng], x2[rng])), name=x2.name, units=x2.units)
 
         fig = plt.figure()
         ax1 = fig.add_subplot(111)
@@ -190,17 +190,13 @@ class RkfAnalysis(object):
         for tl in ax2.get_yticklabels():
             tl.set_color('r')
 
-        # x2b = self.pad_shift(x2, self.xc_delay(x1, x2))
-        # ax2.plot(self.kf_time - self.kf_time[0], x2b, 'g-')
-
         plt.show()
 
     def plot_correlation(self, x1, x2, xcorr=True):
 
-        if xcorr:
-            x2 = Variable(self.pad_shift(x2.copy(), self.xc_delay(x1, x2)), name=x2.name, units=x2.units)
-
         rng = np.bitwise_and(self.as_time[0] <= self.kf_time, self.kf_time <= self.as_time[-1])
+        if xcorr:
+            x2 = Variable(self.pad_shift(x2.copy(), self.xc_delay(x1[rng], x2[rng])), name=x2.name, units=x2.units)
 
         plt.figure()
         plt.scatter(x1[rng], x2[rng], c=rka.kf_time[rng]-rka.kf_time[rng][0])
@@ -211,11 +207,40 @@ class RkfAnalysis(object):
 
         plt.show()
 
-    def default_plots(self):
+    def plot_fourier(self, x1, x2):
 
-        self.plot_timecourse(x1=self.ang_vel, x2=self.wing_diff)
-        self.plot_correlation(x1=self.ang_vel, x2=self.wing_diff)
+        rng = np.bitwise_and(self.as_time[0] <= self.kf_time, self.kf_time <= self.as_time[-1])
+        n_fft = int(2**(np.ceil(np.log(sum(rng)/np.log(2)))))
+
+        freq = np.fft.fftfreq(n_fft, np.diff(self.kf_time[:2]))
+        sp1 = np.fft.fft(x1[rng][~np.isnan(x1[rng])], n=n_fft)
+        sp2 = np.fft.fft(self.nan_interp(x2[rng]) - np.mean(x2[rng]), n=n_fft)
+        gain = np.abs(sp2)/np.abs(sp1)
+
+        fig = plt.figure()
+        ax1 = fig.add_subplot(211)
+        ax1.plot(freq[:n_fft/2], np.abs(sp1)[:n_fft/2])
+        ax1.set_xlim([0, 5])
+
+        ax2 = ax1.twinx()
+        ax2.plot(np.nan, '-', label='temp')
+        ax2.plot(freq[:n_fft/2], np.abs(sp2)[:n_fft/2], 'r-')
+
+        ax2.legend(['%s (%s)' % (x1.name, x1.units), '%s (%s)' % (x2.name, x2.units)])
+
+        ax3 = fig.add_subplot(212)
+        ax3.plot(freq[:n_fft/2], gain[:n_fft/2])
+        ax3.set_xlim([0, 5])
+        ax3.set_xlabel("Frequency (Hz)")
+
+        ax3.legend(["Gain"])
+
+    def default_plots(self, var1, var2, xcorr=True):
+
+        self.plot_timecourse(var1, var2, xcorr=xcorr)
+        self.plot_correlation(var1, var2, xcorr=xcorr)
+        self.plot_fourier(var1, var2)
 
 
-rka = RkfAnalysis("/home/dickinsonlab/git/rkf_analysis/rosbag_data/2019-02-01-15-17-24.bag")
-rka.default_plots()
+rka = RkfAnalysis("/home/dickinsonlab/git/rkf_analysis/rosbag_data/2019-02-01-15-20-31.bag")
+rka.default_plots(rka.ang_vel, rka.wing_diff, xcorr=True)
