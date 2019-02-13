@@ -4,9 +4,10 @@ import matplotlib.pyplot as plt
 import scipy.interpolate as spi
 import scipy.signal as sps
 import numpy as np
+import os
+import tkFileDialog as tkf
 
-
-# Numpy array with optional metadata
+# Numpy array with optional name & units metadata
 class Variable(np.ndarray):
 
     def __new__(cls, array, dtype=None, order=None, name=None, units=None):
@@ -18,9 +19,13 @@ class Variable(np.ndarray):
 
 class RkfAnalysis(object):
 
-    def __init__(self, bagfile):
+    # Check data integrity, initialize variables, and call preprocessing functions
+    def __init__(self, bagfile=None):
 
-        # Load bag file
+        if not bagfile:
+            bagfile = tkf.askopenfilename(initialdir=os.getcwd())
+        elif os.path.isdir(bagfile):
+            bagfile = tkf.askopenfilename(initialdir=bagfile)
         self.bag = rosbag.Bag(bagfile, "r")
         self.bridge = CvBridge()
 
@@ -48,9 +53,10 @@ class RkfAnalysis(object):
 
         # Allocate and preprocess data arrays
         self._extract_data()
-        self._calc_params()
+        self._calc_vars()
         self._resample_params()
 
+    # Check completeness and length of bag file
     def _check_data(self):
 
         self.topics = self.bag.get_type_and_topic_info()[1].keys()
@@ -61,6 +67,7 @@ class RkfAnalysis(object):
             else:
                 self.msg_count[topic] = self.bag.get_message_count(topic)
 
+    # Loop over rosbag and save messages to arrays
     def _extract_data(self):
 
         if not self.data_is_valid:
@@ -91,7 +98,8 @@ class RkfAnalysis(object):
 
                 ixas += 1
 
-    def _calc_params(self):
+    # Calculate derived parameters
+    def _calc_vars(self):
 
         self.ang_vel[:] = self.smooth_deriv(self.as_time, self.ang_pos)
         self.left_angle[:] = self.sliding_average(self.left_angle, 11)
@@ -100,11 +108,13 @@ class RkfAnalysis(object):
         self.ab_angle[:] = self.sliding_average(self.ab_angle, 11)
         self.wing_diff = Variable(self.left_angle - self.right_angle, name="Wingbeat Difference (L-R)", units="deg")
 
+    # Resample autostep variables to Kinefly time vector
     def _resample_params(self):
 
         self.ang_pos = Variable(self.resample(self.as_time, self.ang_pos, self.kf_time), name="Angular Position", units="deg")
         self.ang_vel = Variable(self.resample(self.as_time, self.ang_vel, self.kf_time), name="Angular Velocity", units="deg/sec")
 
+    # Initialize and call cubic spline for resampling
     @staticmethod
     def resample(x1, y1, x2):
 
@@ -112,6 +122,7 @@ class RkfAnalysis(object):
         y2 = spline.__call__(x2, extrapolate=False)
         return y2
 
+    # Shift an array, padding with zeros to maintain length
     @staticmethod
     def pad_shift(x, dt):
 
@@ -123,12 +134,16 @@ class RkfAnalysis(object):
         y = y[2*dt-j::k][::k]
         return y
 
+    # Calculate cross-correlation and return centered argmax
+    # *** Does not support negative correlations
     def xc_delay(self, x1, x2):
 
         xc = sps.correlate(self.nan_interp(x1), self.nan_interp(x2))
-        envelope = np.arange(len(xc))
-        envelope = 1 - np.abs(envelope/envelope[-1] - 0.5)
-        xc = xc * envelope
+
+        # Apply Bartlett window to bias toward low absolute delays
+        window = np.bartlett(len(xc))
+        xc = xc * window
+        xc = abs(xc * window) # often selects the wrong peak due to noise
 
         m = np.argmax(xc)
         l = len(xc)
@@ -136,6 +151,7 @@ class RkfAnalysis(object):
 
         return dt
 
+    # Calculate the nth derivative and apply n+1 smoothing filters
     def smooth_deriv(self, x, y, n=1, N=5):
 
         deriv = y.copy()
@@ -151,6 +167,7 @@ class RkfAnalysis(object):
 
         return deriv
 
+    # Apply a smoothing filter, padding with edge values
     def sliding_average(self, x, N):
 
         assert N % 2 == 1
@@ -160,38 +177,53 @@ class RkfAnalysis(object):
         vec = vec[N-1:] / N
         return np.pad(vec, (N-1)/2, "edge")
 
+    # Linearly interpolate all NaN values
     def nan_interp(self, y):
 
         nans, x = self._nan_helper(y)
         y[nans] = np.interp(x(nans), x(~nans), y[~nans])
         return y
 
+    # Generate helper functions for nan_interp
     @staticmethod
     def _nan_helper(y):
 
         return np.isnan(y), lambda z: z.nonzero()[0]
 
+    # Plot x1 and x2 against time
     def plot_timecourse(self, x1, x2, xcorr=True):
 
+        c = plt.rcParams['axes.prop_cycle'].by_key()['color']
         rng = np.bitwise_and(self.as_time[0] <= self.kf_time, self.kf_time <= self.as_time[-1])
+        delay = 0
         if xcorr:
-            x2 = Variable(self.pad_shift(x2.copy(), self.xc_delay(x1[rng], x2[rng])), name=x2.name, units=x2.units)
+            delay = self.xc_delay(x1[rng], x2[rng])
+            x2 = Variable(self.pad_shift(x2.copy(), delay), name=x2.name, units=x2.units)
 
         fig = plt.figure()
         ax1 = fig.add_subplot(111)
         ax1.plot(self.kf_time - self.kf_time[0], x1)
 
         ax1.set_xlabel('Time (sec)')
-        ax1.set_ylabel('%s (%s)' % (x1.name, x1.units))
+        ax1.set_ylabel('%s (%s)' % (x1.name, x1.units), color=c[0])
+        for tl in ax1.get_yticklabels():
+            tl.set_color(c[0])
 
         ax2 = ax1.twinx()
-        ax2.plot(self.kf_time - self.kf_time[0], x2, 'r-')
-        ax2.set_ylabel('%s (%s)' % (x2.name, x2.units), color='r')
+        ax2.plot(self.kf_time - self.kf_time[0], x2, c[1])
+        ax2.set_ylabel('%s (%s)' % (x2.name, x2.units), color=c[1])
         for tl in ax2.get_yticklabels():
-            tl.set_color('r')
+            tl.set_color(c[1])
+
+        props = dict(boxstyle='round', facecolor='w', alpha=0.75)
+        plt.text(0.05, 0.05, '$\Delta t_{corr}$ = %ims' % (1000 * delay * (self.kf_time[1] - self.kf_time[0])),
+                 transform=ax1.transAxes,
+                 horizontalalignment='left',
+                 bbox=props)
 
         plt.show()
 
+    # Plot x2 against x1
     def plot_correlation(self, x1, x2, xcorr=True):
 
         rng = np.bitwise_and(self.as_time[0] <= self.kf_time, self.kf_time <= self.as_time[-1])
@@ -207,40 +239,51 @@ class RkfAnalysis(object):
 
         plt.show()
 
-    def plot_fourier(self, x1, x2):
+    # Plot overlaid frequency responses of x1 and x2, as well as gain
+    def plot_fourier(self, x1, x2, pad_factor=1):
 
+        c = plt.rcParams['axes.prop_cycle'].by_key()['color']
         rng = np.bitwise_and(self.as_time[0] <= self.kf_time, self.kf_time <= self.as_time[-1])
-        n_fft = int(2**(np.ceil(np.log(sum(rng)/np.log(2)))))
+        l = sum(rng)
+        n_fft = int(2**np.ceil(np.log(l)/np.log(2))) * pad_factor
 
+        # Calculate Fourier transforms on Bartlett-windowed data
         freq = np.fft.fftfreq(n_fft, np.diff(self.kf_time[:2]))
-        sp1 = np.fft.fft(x1[rng][~np.isnan(x1[rng])], n=n_fft)
-        sp2 = np.fft.fft(self.nan_interp(x2[rng]) - np.mean(x2[rng]), n=n_fft)
+        sp1 = np.fft.fft(x1[rng][~np.isnan(x1[rng])] * np.bartlett(l), n=n_fft)
+        sp2 = np.fft.fft((self.nan_interp(x2[rng]) - np.mean(x2[rng])) * np.bartlett(l), n=n_fft)
+
         gain = np.abs(sp2)/np.abs(sp1)
+        lim = np.percentile(gain, 90)
 
         fig = plt.figure()
         ax1 = fig.add_subplot(211)
         ax1.plot(freq[:n_fft/2], np.abs(sp1)[:n_fft/2])
-        ax1.set_xlim([0, 5])
+        ax1.set_ylabel('%s (%s)' % (x1.name, x1.units), color=c[0])
+        for tl in ax1.get_yticklabels():
+            tl.set_color(c[0])
+        ax1.set_xlim([0, 1])
 
         ax2 = ax1.twinx()
-        ax2.plot(np.nan, '-', label='temp')
-        ax2.plot(freq[:n_fft/2], np.abs(sp2)[:n_fft/2], 'r-')
-
-        ax2.legend(['%s (%s)' % (x1.name, x1.units), '%s (%s)' % (x2.name, x2.units)])
+        ax2.plot(freq[:n_fft/2], np.abs(sp2)[:n_fft/2], c[1])
+        ax2.set_ylabel('%s (%s)' % (x2.name, x2.units), color=c[1])
+        for tl in ax2.get_yticklabels():
+            tl.set_color(c[1])
 
         ax3 = fig.add_subplot(212)
         ax3.plot(freq[:n_fft/2], gain[:n_fft/2])
-        ax3.set_xlim([0, 5])
+        ax3.set_xlim([0, 1])
+        ax3.set_ylim([-lim*0.1, lim*1.1])
         ax3.set_xlabel("Frequency (Hz)")
 
-        ax3.legend(["Gain"])
+        ax3.set_ylabel("Gain")
 
-    def default_plots(self, var1, var2, xcorr=True):
+    # Call a common set of plot functions
+    def default_plots(self, var1, var2):
 
-        self.plot_timecourse(var1, var2, xcorr=xcorr)
-        self.plot_correlation(var1, var2, xcorr=xcorr)
-        self.plot_fourier(var1, var2)
+        self.plot_timecourse(var1, var2, xcorr=True)
+        self.plot_correlation(var1, var2, xcorr=True)
+        self.plot_fourier(var1, var2, pad_factor=2)
 
 
-rka = RkfAnalysis("/home/dickinsonlab/git/rkf_analysis/rosbag_data/2019-02-01-15-20-31.bag")
-rka.default_plots(rka.ang_vel, rka.wing_diff, xcorr=True)
+rka = RkfAnalysis("/home/dickinsonlab/git/rkf_analysis/rosbag_data")
+rka.default_plots(rka.ang_vel, rka.head_angle)
