@@ -141,15 +141,15 @@ class RkfAnalysis(object):
         y = y[2*dt-j::k][::k]
         return y
 
-    def parse_freq(self, pos, pll_params=None, schmitt_params=None):
+    def parse_freq(self, x, pll_params=(0.01, 0.707, 1000), schmitt_params=None):
 
         pll = PyPLL(params=pll_params)
-        pll.run(sps.hilbert(pos))
-        phase = pll.Phi
+        pll.run(sps.hilbert(x))
+        phase = pll.Phi  # [phi / (2*np.pi) for phi in pll.Phi]
         freq = np.diff(phase) / np.diff(self.kf_time[:2])
 
         if not schmitt_params:
-            schmitt_params = (0., 1., 0.1) # (offset, period, hysteresis)
+            schmitt_params = (0., 1., 0.1)  # (offset, period, hysteresis)
         off, per, hys = schmitt_params
 
         freq_list = [[0, round(freq[0]/per)*per]]
@@ -178,7 +178,7 @@ class RkfAnalysis(object):
         # Apply Bartlett window to bias toward low absolute delays
         window = np.bartlett(len(xc))
         xc = xc * window
-        xc = abs(xc * window) # often selects the wrong peak due to noise
+        xc = abs(xc * window)  # often selects the wrong peak due to noise
 
         m = np.argmax(xc)
         l = len(xc)
@@ -278,14 +278,14 @@ class RkfAnalysis(object):
     def plot_fourier(self, x1, x2, pad_factor=1):
 
         c = plt.rcParams['axes.prop_cycle'].by_key()['color']
-        rng = np.bitwise_and(self.as_time[0] <= self.kf_time, self.kf_time <= self.as_time[-1])
-        l = sum(rng)
+        # rng = np.bitwise_and(self.as_time[0] <= self.kf_time, self.kf_time <= self.as_time[-1])
+        l = sum(self.rng)
         n_fft = int(2**np.ceil(np.log(l)/np.log(2))) * pad_factor
 
         # Calculate Fourier transforms on Bartlett-windowed data
         freq = np.fft.fftfreq(n_fft, np.diff(self.kf_time[:2]))
-        sp1 = np.fft.fft(x1[rng][~np.isnan(x1[rng])] * np.bartlett(l), n=n_fft)
-        sp2 = np.fft.fft((self.nan_interp(x2[rng]) - np.mean(x2[rng])) * np.bartlett(l), n=n_fft)
+        sp1 = np.fft.fft(x1[self.rng][~np.isnan(x1[self.rng])] * np.bartlett(l), n=n_fft)
+        sp2 = np.fft.fft((self.nan_interp(x2[self.rng]) - np.mean(x2[self.rng])) * np.bartlett(l), n=n_fft)
 
         gain = np.abs(sp2)/np.abs(sp1)
         lim = np.percentile(gain, 90)
@@ -314,7 +314,37 @@ class RkfAnalysis(object):
 
     def plot_response(self):
 
-        pass
+        pad_factor = 2
+
+        x1 = self.ang_pos[self.rng]
+        x2 = self.wing_diff[self.rng]
+
+        freq_list = self.parse_freq(x1)
+
+        gain = []
+
+        for i, _ in enumerate(freq_list[:-1]):
+
+            freq1 = freq_list[i]
+            freq2 = freq_list[i+1]
+
+            x1bin = x1[freq1[0]:freq2[0]]
+            x1bin -= np.mean(x1bin)
+            x2bin = x2[freq1[0]:freq2[0]]
+            x2bin -= np.mean(x2bin)
+
+            l = len(x1bin)
+            n_fft = int(2 ** np.ceil(np.log(l) / np.log(2))) * pad_factor
+
+            fftfreq = np.fft.fftfreq(n_fft, np.diff(self.kf_time[:2])) * 2 * np.pi
+            sp1 = np.abs(np.fft.fft(x1bin * np.bartlett(l), n=n_fft))**2
+            sp2 = np.abs(np.fft.fft(x2bin * np.bartlett(l), n=n_fft))**2
+
+            ctr = np.argmin(np.abs(fftfreq - freq1[1]))
+            g_rng = np.arange(ctr - 3, ctr + 3 + 1)
+            gain.append([freq1[1], np.mean(sp2[g_rng] / sp1[g_rng])])
+
+        return gain
 
     # Call a common set of plot functions
     def default_plots(self, var1, var2):
@@ -324,6 +354,10 @@ class RkfAnalysis(object):
         self.plot_fourier(var1, var2, pad_factor=2)
 
 
-rka = RkfAnalysis("/home/dickinsonlab/git/rkf_analysis/rosbag_data")
+rka = RkfAnalysis("/home/dickinsonlab/git/rkf_analysis/rosbag_data/2019-01-30/2019-01-30-17-04-00.bag")
 # rka.default_plots(rka.ang_vel, rka.wing_diff)
 freq_list = rka.parse_freq(rka.ang_pos[rka.rng], pll_params=(0.005, 1.5, 50000))
+gain = rka.plot_response()
+plt.plot([x[0] for x in freq_list], [x[1] for x in freq_list], '.')
+plt.figure()
+plt.plot([x[0] for x in gain], [x[1] for x in gain])
