@@ -107,6 +107,7 @@ class RkfAnalysis(object):
         self.head_angle[:] = self.sliding_average(self.head_angle, 11)
         self.ab_angle[:] = self.sliding_average(self.ab_angle, 11)
         self.wing_diff = Variable(self.left_angle - self.right_angle, name="Wingbeat Difference (L-R)", units="deg")
+        self.rng = np.bitwise_and(self.as_time[0] <= self.kf_time, self.kf_time <= self.as_time[-1])
 
     # Resample autostep variables to Kinefly time vector
     def _resample_params(self):
@@ -133,6 +134,24 @@ class RkfAnalysis(object):
         y = np.pad(x, abs(dt), 'edge')
         y = y[2*dt-j::k][::k]
         return y
+
+    def parse_freq(self, pos, delta=1):
+
+        pos = self.nan_interp(pos)
+
+        # Find zero-crossings
+        zc_up = np.bitwise_and((pos - delta) * np.roll(pos - delta, -1) < 0,
+                               (pos - delta) - np.roll(pos - delta, -1) < 0)
+        zc_dn = np.bitwise_and((pos + delta) * np.roll(pos + delta, -1) < 0,
+                               (pos + delta) - np.roll(pos + delta, -1) > 0)
+        zc_list = np.argwhere(np.bitwise_or(zc_up, zc_dn))
+        zc_list = np.insert(zc_list, 0, 0)
+
+        freq = pos.copy() * 0
+        for i, _ in enumerate(zc_list[:-1]):
+            freq[zc_list[i]:zc_list[i+1]] = 1. / (zc_list[i+1] - zc_list[i])
+
+        return freq, zc_list
 
     # Calculate cross-correlation and return centered argmax
     # *** Does not support negative correlations
@@ -286,4 +305,9 @@ class RkfAnalysis(object):
 
 
 rka = RkfAnalysis("/home/dickinsonlab/git/rkf_analysis/rosbag_data")
-rka.default_plots(rka.ang_vel, rka.head_angle)
+# rka.default_plots(rka.ang_vel, rka.wing_diff)
+freq, zc_list = rka.parse_freq(rka.ang_pos[rka.rng])
+zc_loc = freq * 0
+zc_loc[zc_list] = 1
+plt.plot(freq)
+plt.plot(zc_loc * max(freq))
