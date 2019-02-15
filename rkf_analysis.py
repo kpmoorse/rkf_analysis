@@ -5,7 +5,10 @@ import scipy.interpolate as spi
 import scipy.signal as sps
 import numpy as np
 import os
+import Tkinter as tk
 import tkFileDialog as tkf
+import scipy.signal as sps
+from py_pll import PyPLL
 
 # Numpy array with optional name & units metadata
 class Variable(np.ndarray):
@@ -22,10 +25,13 @@ class RkfAnalysis(object):
     # Check data integrity, initialize variables, and call preprocessing functions
     def __init__(self, bagfile=None):
 
+        self.tkroot = tk.Tk()
         if not bagfile:
             bagfile = tkf.askopenfilename(initialdir=os.getcwd())
         elif os.path.isdir(bagfile):
             bagfile = tkf.askopenfilename(initialdir=bagfile)
+        self.tkroot.destroy()
+
         self.bag = rosbag.Bag(bagfile, "r")
         self.bridge = CvBridge()
 
@@ -135,23 +141,33 @@ class RkfAnalysis(object):
         y = y[2*dt-j::k][::k]
         return y
 
-    def parse_freq(self, pos, delta=1):
+    def parse_freq(self, pos, pll_params=None, schmitt_params=None):
 
-        pos = self.nan_interp(pos)
+        pll = PyPLL(params=pll_params)
+        pll.run(sps.hilbert(pos))
+        phase = pll.Phi
+        freq = np.diff(phase) / np.diff(self.kf_time[:2])
 
-        # Find zero-crossings
-        zc_up = np.bitwise_and((pos - delta) * np.roll(pos - delta, -1) < 0,
-                               (pos - delta) - np.roll(pos - delta, -1) < 0)
-        zc_dn = np.bitwise_and((pos + delta) * np.roll(pos + delta, -1) < 0,
-                               (pos + delta) - np.roll(pos + delta, -1) > 0)
-        zc_list = np.argwhere(np.bitwise_or(zc_up, zc_dn))
-        zc_list = np.insert(zc_list, 0, 0)
+        if not schmitt_params:
+            schmitt_params = (0., 1., 0.1) # (offset, period, hysteresis)
+        off, per, hys = schmitt_params
 
-        freq = pos.copy() * 0
-        for i, _ in enumerate(zc_list[:-1]):
-            freq[zc_list[i]:zc_list[i+1]] = 1. / (zc_list[i+1] - zc_list[i])
+        freq_list = [[0, round(freq[0]/per)*per]]
 
-        return freq, zc_list
+        # Apply software schmitt trigger to detect line crossings
+        while True:
+
+            rail_hi = freq[freq_list[-1][0]+1:] - freq_list[-1][1] - (per / 2 + hys)
+            rail_lo = freq[freq_list[-1][0]+1:] - freq_list[-1][1] + (per / 2 + hys)
+            zc = np.concatenate((np.where(np.abs(np.diff(np.sign(rail_hi))))[0],
+                                 np.where(np.abs(np.diff(np.sign(rail_lo))))[0]))
+            if len(zc) == 0: break
+
+            zc = int(np.min(zc) + freq_list[-1][0] + 2)
+
+            freq_list.append([zc, round(freq[zc]/per)*per])
+
+        return freq_list
 
     # Calculate cross-correlation and return centered argmax
     # *** Does not support negative correlations
@@ -296,6 +312,10 @@ class RkfAnalysis(object):
 
         ax3.set_ylabel("Gain")
 
+    def plot_response(self):
+
+        pass
+
     # Call a common set of plot functions
     def default_plots(self, var1, var2):
 
@@ -306,8 +326,4 @@ class RkfAnalysis(object):
 
 rka = RkfAnalysis("/home/dickinsonlab/git/rkf_analysis/rosbag_data")
 # rka.default_plots(rka.ang_vel, rka.wing_diff)
-freq, zc_list = rka.parse_freq(rka.ang_pos[rka.rng])
-zc_loc = freq * 0
-zc_loc[zc_list] = 1
-plt.plot(freq)
-plt.plot(zc_loc * max(freq))
+freq_list = rka.parse_freq(rka.ang_pos[rka.rng], pll_params=(0.005, 1.5, 50000))

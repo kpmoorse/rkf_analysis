@@ -7,21 +7,39 @@ import scipy.signal as sps
 
 class PyPLL(object):
 
-    def __init__(self):
+    def __init__(self, params=(0.01, 0.707, 1000)):
+
+        self.wn = []
+        self.zeta = []
+        self.K = []
+
+        self.X = []
+        self.Y = []
+        self.Phi = []
+
+        self.y = []
+        self.delta_phi = []
+
+        self.set_params(params)
+
+    def set_params(self, params):
 
         # parameters
-        self.wn = 0.01  # pll bandwidth
-        self.zeta = 0.707  # pll damping factor
-        self.K = 1000  # pll loop gain
+        self.wn = params[0]  # pll bandwidth
+        self.zeta = params[1]  # pll damping factor
+        self.K = params[2]  # pll loop gain
+        self._calc_params()
+
+    def _calc_params(self):
 
         # generate loop filter parameters (active PI design)
-        self.t1 = self.K/(self.wn*self.wn)   # tau_1
-        self.t2 = 2*self.zeta/self.wn   # tau_2
+        self.t1 = self.K / (self.wn * self.wn)   # tau_1
+        self.t2 = 2 * self.zeta / self.wn   # tau_2
 
         # feed-forward coefficients (numerator)
-        self.b0 = (4*self.K/self.t1)*(1.+self.t2/2.0)
-        self.b1 = (8*self.K/self.t1)
-        self.b2 = (4*self.K/self.t1)*(1.-self.t2/2.0)
+        self.b0 = (4 * self.K / self.t1)*(1. + self.t2 / 2.0)
+        self.b1 = (8 * self.K / self.t1)
+        self.b2 = (4 * self.K / self.t1)*(1. - self.t2 / 2.0)
 
         # feed-back coefficients (denominator)
         #    a0 =  1.0  is implied
@@ -33,13 +51,13 @@ class PyPLL(object):
         self.v1 = 0.0
         self.v2 = 0.0
 
-        # Initialize states
+        # Initialize state
         self.phi_hat = 0.0  # PLL's initial phase
 
-        self.X = []
-        self.Y = []
-        self.y = []
-        self.delta_phi = []
+    def run(self, X):
+
+        for x in X:
+            self.step(x)
 
     def step(self, x):
 
@@ -52,6 +70,7 @@ class PyPLL(object):
         # Store input and output values
         self.X.append(x.real)
         self.Y.append(self.y.real)
+        self.Phi.append(self.phi_hat)
 
         # advance buffer
         self.v2 = self.v1  # shift center register to upper register
@@ -71,9 +90,7 @@ if __name__ == '__main__':
     n = 400
     Phi = np.arange(n) * 0.3
     X0 = sps.hilbert(5 * cos(Phi))
-    for i in range(n):
-        x = X0[i]
-        pll.step(x)
+    pll.run(X0)
 
     plt.plot(pll.X)
     plt.plot(pll.Y)
