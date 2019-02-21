@@ -15,11 +15,21 @@ class RkfMultiAnalysis(object):
 
     def __init__(self):
 
-        self.tkroot = tk.Tk()
+        tkroot = tk.Tk()
         filetypes = (("ROS bag files", "*.bag"), ("all files", "*.*"))
-        file_list = tkf.askopenfilenames(initialdir=os.getcwd(), filetypes=filetypes)
-        self.tkroot.destroy()
+        self.file_list = tkf.askopenfilenames(initialdir=os.getcwd(), filetypes=filetypes)
+        tkroot.destroy()
 
-        pass
+        self.cgain = np.empty((0, 2))
+        self._calc_compound_gain()
+
+    def _calc_compound_gain(self):
+
+        for file in self.file_list:
+
+            rka = RkfAnalysis(file)
+            self.cgain = np.concatenate((self.cgain, np.array(rka.calc_response(rka.ang_pos, rka.wing_diff))), axis=0)
+
+        self.cgain = self.cgain[np.argsort(self.cgain[:, 0])]
 
 rkm = RkfMultiAnalysis()
