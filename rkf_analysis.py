@@ -209,7 +209,7 @@ class RkfAnalysis(object):
         # Apply Bartlett window to bias toward low absolute delays
         window = np.bartlett(len(xc))
         xc = xc * window
-        xc = abs(xc * window)  # often selects the wrong peak due to noise
+        # xc = abs(xc * window)  # often selects the wrong peak due to noise
 
         m = np.argmax(xc)
         l = len(xc)
@@ -251,12 +251,12 @@ class RkfAnalysis(object):
         return y
 
     # Calculate gain-response in each frequency bin
-    def calc_response(self, x1, x2, w=3):
+    def calc_response(self, x1, x2, w=2, rtype='gain'):
 
-        assert self.fc_valid, "Response cannot be calculated without frequency counter data"
+        assert self.fc_valid, "Frequency counter is missing from bag file; response cannot be calculated"
 
         pad_factor = 2
-        gain = []
+        response = []
 
         for i, freq in enumerate(self.frequency):
 
@@ -265,13 +265,19 @@ class RkfAnalysis(object):
             l = sum(freq_rng)
             n_fft = int(2 ** np.ceil(np.log(l) / np.log(2))) * pad_factor
 
-            fftfreq = np.fft.fftfreq(n_fft, np.diff(self.kf_time[:2])) * 2 * np.pi
+            fftfreq = np.fft.fftfreq(n_fft, np.diff(self.kf_time[:2]))
             sp1 = np.abs(np.fft.fft(x1[self.rng][freq_rng] * np.bartlett(l), n=n_fft))**2
             sp2 = np.abs(np.fft.fft(x2[self.rng][freq_rng] * np.bartlett(l), n=n_fft))**2
 
             ctr = np.argmin(np.abs(fftfreq - freq))
             g_rng = np.arange(ctr - w, ctr + w + 1)
-            gain.append([freq, np.mean(sp2[g_rng] / sp1[g_rng])])
+
+            if rtype == 'gain':
+                response.append([freq, np.mean(sp2[g_rng] / sp1[g_rng])])
+            elif rtype == 'magnitude':
+                response.append([freq, np.mean(sp2[g_rng])])
+            else:
+                print("Response type not recognized")
 
             if i == 0:
                 sum1, sum2 = sp1, sp2
@@ -279,7 +285,7 @@ class RkfAnalysis(object):
                 sum1 += sp1
                 sum2 += sp2
 
-        return gain
+        return response
 
     # Generate helper functions for nan_interp
     @staticmethod
@@ -287,7 +293,7 @@ class RkfAnalysis(object):
 
         return np.isnan(y), lambda z: z.nonzero()[0]
 
-    def plotyy(self, x, y1, y2, xlabel='Time (sec)', ylabel=(None, None), sub=111):
+    def plotyy(self, x, y1, y2, xlabel='Time (sec)', ylabel=('', ''), sub=111):
 
         c = plt.rcParams['axes.prop_cycle'].by_key()['color']
         fig = plt.figure()
@@ -366,7 +372,7 @@ class RkfAnalysis(object):
         lim = np.percentile(gain, 90)
 
         fig, ax = self.plotyy(freq[:n_fft/2], sp1[:n_fft/2], sp2[:n_fft/2],
-                              xlabel=None, ylabel=(x1.label(), x2.label()), sub=211)
+                              xlabel='', ylabel=(x1.label(), x2.label()), sub=211)
         ax[0].set_xlim([0, 1])
 
         ax3 = fig.add_subplot(212)
@@ -396,5 +402,5 @@ class RkfAnalysis(object):
 if __name__ == '__main__':
 
     rka = RkfAnalysis("/home/dickinsonlab/git/rkf_analysis/rosbag_data")
-    # rka.default_plots(rka.ang_vel, rka.wing_diff)
-    gain = rka.plot_response(rka.ang_vel, rka.wing_diff)
+    rka.default_plots(rka.ang_vel, rka.wing_diff)
+    # gain = rka.plot_response(rka.ang_vel, rka.wing_diff)
