@@ -43,12 +43,12 @@ class RkfMultiAnalysis(object):
         if ransac:
             meanstd = lambda data: [np.mean(data), np.std(data)]
             azscore = lambda data, mdl: np.abs((data-mdl[0])/mdl[1])
-            low = lambda data: data <= np.percentile(data, 75)
+            mse = lambda data, mdl: np.mean((data - mdl[0])**2)
 
         for freq in np.unique(self.cgain[:, 0]):
             data = self.cgain[self.cgain[:, 0] == freq, 1]
             if ransac:
-                mdl = self.ransac(data, meanstd, azscore, init_fun=None, thresh=self.rs_thresh)
+                mdl = self.ransac(data, meanstd, azscore, mse, thresh=self.rs_thresh)
                 mean = mdl[0]
                 self.inliers = np.append(self.inliers, np.abs(data-mdl[0])/mdl[1] < self.rs_thresh)
             else:
@@ -73,39 +73,69 @@ class RkfMultiAnalysis(object):
         plt.plot(mean[:, 0], mean[:, 1], '.-', markersize=12, markerfacecolor='none', c=c[1])
         plt.ylim([-0.1, np.max(comp[self.inliers, 0])*1.1])
 
+        plt.title('Post-RANSAC Frequency Response Curve')
         plt.legend(['Inliers', 'Outliers', 'Model mean'])
         plt.xlabel('Frequency (Hz)')
         plt.ylabel('Gain (a.u.)')
 
     @staticmethod
-    def ransac(data, mdl_fun, cost_fun, init_fun=None, thresh=1, max_iters=20):
+    def ransac(data, mdl_fun, dat_cost, mdl_cost, d=None, thresh=1, max_iters=int(1e4)):
 
-        # Generate hypothetical inliers and initialize model
-        if not init_fun:
+        best_mdl = []
+        best_err = np.inf
+
+        if not d:
+            d = int(len(data) / 2)
+
+        for i in range(max_iters):
+
+            # Select a random subset of data (hypothetical inliers)
             hin = np.random.choice([True, False], data.shape[0])
             while np.sum(hin) < 2:
                 hin[np.random.randint(len(hin))] = True  # Ensure hin has at least 2 points (std > 0)
-        else: hin = init_fun(data)
 
-        mdl = mdl_fun(data[hin])
-        cset = hin
+            # Generate a tentative model
+            mdl = mdl_fun(data[hin])
 
-        flag = True
-        for i in range(max_iters):
+            # Find points that agree with the model (consensus set)
+            cset = np.zeros(hin.shape).astype(bool)
+            cset[np.bitwise_and(~hin, dat_cost(data, mdl) < thresh)] = True
 
-            # Update consensus set via cost function
-            cset_old = cset
-            cset = cost_fun(data, mdl) < thresh
+            # Combine hin and cset, recalculate model, and check against current best
+            if np.sum(cset) >= d:
+                hin = np.bitwise_or(hin, cset)
+                mdl = mdl_fun(data[hin])
+                err = mdl_cost(data[hin], mdl)
+                if err < best_err:
+                    best_mdl = mdl
+                    best_err = err
 
-            # Break if consensus set has converged
-            if np.all(cset == cset_old):
-                flag = False
-                break
+        return best_mdl
 
-            # Update model
-            mdl = mdl_fun(data[cset])
-
-        if flag: warnings.warn('RANSAC has reached max_iters (%i); exiting without convergence' % max_iters)
+        # # Generate hypothetical inliers and initialize model
+        # hin = np.random.choice([True, False], data.shape[0])
+        # while np.sum(hin) < 2:
+        #     hin[np.random.randint(len(hin))] = True  # Ensure hin has at least 2 points (std > 0)
+        #
+        # mdl = mdl_fun(data[hin])
+        # cset = hin
+        #
+        # flag = True
+        # for i in range(max_iters):
+        #
+        #     # Update consensus set via cost function
+        #     cset_old = cset
+        #     cset = cost_fun(data, mdl) < thresh
+        #
+        #     # Break if consensus set has converged
+        #     if np.all(cset == cset_old):
+        #         flag = False
+        #         break
+        #
+        #     # Update model
+        #     mdl = mdl_fun(data[cset])
+        #
+        # if flag: warnings.warn('RANSAC has reached max_iters (%i); exiting without convergence' % max_iters)
 
         return mdl
 
