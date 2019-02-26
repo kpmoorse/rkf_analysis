@@ -4,7 +4,7 @@ import os
 import Tkinter as tk
 import tkFileDialog as tkf
 from tqdm import tqdm
-import warnings
+from ransac import ransac
 
 from rkf_analysis import RkfAnalysis
 
@@ -38,7 +38,7 @@ class RkfMultiAnalysis(object):
         if sort:
             self.cgain = self.cgain[np.argsort(self.cgain[:, 0])]
 
-    def _calc_means(self, ransac=True):
+    def _calc_means(self, robust=True):
 
         if ransac:
             meanstd = lambda data: [np.mean(data), np.std(data)]
@@ -47,8 +47,8 @@ class RkfMultiAnalysis(object):
 
         for freq in np.unique(self.cgain[:, 0]):
             data = self.cgain[self.cgain[:, 0] == freq, 1]
-            if ransac:
-                mdl = self.ransac(data, meanstd, azscore, mse, thresh=self.rs_thresh)
+            if robust:
+                mdl = ransac(data, meanstd, azscore, mse, thresh=self.rs_thresh)
                 mean = mdl[0]
                 self.inliers = np.append(self.inliers, np.abs(data-mdl[0])/mdl[1] < self.rs_thresh)
             else:
@@ -78,66 +78,39 @@ class RkfMultiAnalysis(object):
         plt.xlabel('Frequency (Hz)')
         plt.ylabel('Gain (a.u.)')
 
-    @staticmethod
-    def ransac(data, mdl_fun, dat_cost, mdl_cost, d=None, thresh=1, max_iters=int(1e4)):
-
-        best_mdl = []
-        best_err = np.inf
-
-        if not d:
-            d = int(len(data) / 2)
-
-        for i in range(max_iters):
-
-            # Select a random subset of data (hypothetical inliers)
-            hin = np.random.choice([True, False], data.shape[0])
-            while np.sum(hin) < 2:
-                hin[np.random.randint(len(hin))] = True  # Ensure hin has at least 2 points (std > 0)
-
-            # Generate a tentative model
-            mdl = mdl_fun(data[hin])
-
-            # Find points that agree with the model (consensus set)
-            cset = np.zeros(hin.shape).astype(bool)
-            cset[np.bitwise_and(~hin, dat_cost(data, mdl) < thresh)] = True
-
-            # Combine hin and cset, recalculate model, and check against current best
-            if np.sum(cset) >= d:
-                hin = np.bitwise_or(hin, cset)
-                mdl = mdl_fun(data[hin])
-                err = mdl_cost(data[hin], mdl)
-                if err < best_err:
-                    best_mdl = mdl
-                    best_err = err
-
-        return best_mdl
-
-        # # Generate hypothetical inliers and initialize model
-        # hin = np.random.choice([True, False], data.shape[0])
-        # while np.sum(hin) < 2:
-        #     hin[np.random.randint(len(hin))] = True  # Ensure hin has at least 2 points (std > 0)
-        #
-        # mdl = mdl_fun(data[hin])
-        # cset = hin
-        #
-        # flag = True
-        # for i in range(max_iters):
-        #
-        #     # Update consensus set via cost function
-        #     cset_old = cset
-        #     cset = cost_fun(data, mdl) < thresh
-        #
-        #     # Break if consensus set has converged
-        #     if np.all(cset == cset_old):
-        #         flag = False
-        #         break
-        #
-        #     # Update model
-        #     mdl = mdl_fun(data[cset])
-        #
-        # if flag: warnings.warn('RANSAC has reached max_iters (%i); exiting without convergence' % max_iters)
-
-        return mdl
+    # @staticmethod
+    # def ransac(data, mdl_fun, dat_cost, mdl_cost, d=None, thresh=1, max_iters=int(1e4)):
+    #
+    #     best_mdl = []
+    #     best_err = np.inf
+    #
+    #     if not d:
+    #         d = int(len(data) / 2)
+    #
+    #     for i in range(max_iters):
+    #
+    #         # Select a random subset of data (hypothetical inliers)
+    #         hin = np.random.choice([True, False], data.shape[0])
+    #         while np.sum(hin) < 2:
+    #             hin[np.random.randint(len(hin))] = True  # Ensure hin has at least 2 points (std > 0)
+    #
+    #         # Generate a tentative model
+    #         mdl = mdl_fun(data[hin])
+    #
+    #         # Find points that agree with the model (consensus set)
+    #         cset = np.zeros(hin.shape).astype(bool)
+    #         cset[np.bitwise_and(~hin, dat_cost(data, mdl) < thresh)] = True
+    #
+    #         # Combine hin and cset, recalculate model, and check against current best
+    #         if np.sum(cset) >= d:
+    #             hin = np.bitwise_or(hin, cset)
+    #             mdl = mdl_fun(data[hin])
+    #             err = mdl_cost(data[hin], mdl)
+    #             if err < best_err:
+    #                 best_mdl = mdl
+    #                 best_err = err
+    #
+    #     return best_mdl
 
 
 rkm = RkfMultiAnalysis()
