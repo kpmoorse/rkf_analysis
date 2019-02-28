@@ -36,9 +36,8 @@ class RkfAnalysis(object):
         self.tkroot.destroy()
 
         self.bag = rosbag.Bag(bagfile, "r")
-        # self.bridge = CvBridge()
 
-        self.fc_topic = "/frequency"
+        self.fc_topic = "/freq_counter/frequency"
         self.fc_valid = self.fc_topic in self.bag.get_type_and_topic_info()[1].keys()
 
         # Check bag topic list
@@ -51,7 +50,7 @@ class RkfAnalysis(object):
         # Initialize data variables with metadata
         self.kf_time = Variable(np.zeros(self.msg_count["/kinefly/flystate"]),
                                 name="Kinefly Time", units="sec")
-        self.kf_t0 = []
+        self.kf_dt = []
 
         self.left_angle = Variable(self.kf_time.copy(), name="Left Wing Angle", units="deg")
         self.right_angle = Variable(self.kf_time.copy(), name="Right Wing Angle", units="deg")
@@ -70,6 +69,7 @@ class RkfAnalysis(object):
             self.freq_trace = self.fc_time.copy()
 
         # Allocate and preprocess data arrays
+        self.bfilt = []
         self._extract_data()
         self._calc_vars()
         self._resample_params()
@@ -128,6 +128,8 @@ class RkfAnalysis(object):
 
                 ixfc += 1
 
+        self.kf_dt = np.mean(np.diff(self.kf_time))
+
     # Calculate derived parameters
     def _calc_vars(self, w=11):
 
@@ -140,6 +142,13 @@ class RkfAnalysis(object):
         self.ang_vel[:] = self.smooth_deriv(self.as_time, self.ang_pos)
 
         self.rng = np.bitwise_and(self.as_time[0] <= self.kf_time, self.kf_time <= self.as_time[-1])
+
+    def hpf(self, data, order=5, cutoff=0.5):
+
+        nyquist = 1./(2 * self.kf_dt)
+        self.bfilt = sps.butter(order, cutoff/nyquist, btype='highpass')
+
+        return sps.filtfilt(self.bfilt[0], self.bfilt[1], data)
 
     # Resample autostep variables to Kinefly time vector
     def _resample_params(self):
@@ -164,12 +173,16 @@ class RkfAnalysis(object):
     @staticmethod
     def pad_shift(x, dt):
 
+        if dt == 0:
+            return x
+
         dt = -dt
         j = dt < 1
         k = np.sign(dt)
 
         y = np.pad(x, abs(dt), 'edge')
         y = y[2*dt-j::k][::k]
+
         return y
 
     def parse_freq(self, x, pll_params=(0.01, 0.707, 1000), schmitt_params=None):
@@ -251,11 +264,11 @@ class RkfAnalysis(object):
         return y
 
     # Calculate gain-response in each frequency bin
-    def calc_response(self, x1, x2, w=2, rtype='gain'):
+    def calc_response(self, x1, x2, w=2, rtype='gain', return_data=False):
 
         assert self.fc_valid, "Frequency counter is missing from bag file; response cannot be calculated"
 
-        pad_factor = 2
+        pad_factor = 4
         response = []
 
         for i, freq in enumerate(self.frequency):
@@ -266,26 +279,31 @@ class RkfAnalysis(object):
             n_fft = int(2 ** np.ceil(np.log(l) / np.log(2))) * pad_factor
 
             fftfreq = np.fft.fftfreq(n_fft, np.diff(self.kf_time[:2]))
-            sp1 = np.abs(np.fft.fft(x1[self.rng][freq_rng] * np.bartlett(l), n=n_fft))**2
-            sp2 = np.abs(np.fft.fft(x2[self.rng][freq_rng] * np.bartlett(l), n=n_fft))**2
+            xx1 = x1[self.rng][freq_rng] - np.mean(x1[self.rng][freq_rng])
+            xx2 = x2[self.rng][freq_rng] - np.mean(x2[self.rng][freq_rng])
+            sp1 = np.abs(np.fft.fft(xx1 * np.bartlett(l), n=n_fft))**2
+            sp2 = np.abs(np.fft.fft(xx2 * np.bartlett(l), n=n_fft))**2
 
-            ctr = np.argmin(np.abs(fftfreq - freq))
+            # ctr = np.argmin(np.abs(fftfreq - freq))
+            ctr = np.argmax(sp1[:n_fft/2])
             g_rng = np.arange(ctr - w, ctr + w + 1)
 
             if rtype == 'gain':
-                response.append([freq, np.mean(sp2[g_rng] / sp1[g_rng])])
+                response.append([freq, np.mean(sp2[:n_fft/2][g_rng] / sp1[:n_fft/2][g_rng])])
             elif rtype == 'magnitude':
-                response.append([freq, np.mean(sp2[g_rng])])
+                response.append([freq, np.mean(sp2[:n_fft/2][g_rng])])
             else:
                 print("Response type not recognized")
 
             if i == 0:
-                sum1, sum2 = sp1, sp2
+                sum1, sum2 = sp1[None, :], sp2[None, :]
             else:
-                sum1 += sp1
-                sum2 += sp2
+                sum1 = np.concatenate((sum1, sp1[None, :]), axis=0)
+                sum2 = np.concatenate((sum2, sp2[None, :]), axis=0)
 
-        return response
+        if return_data:
+            return response, (fftfreq[:n_fft/2], sum1[:, :n_fft/2], sum2[:, :n_fft/2])
+        else: return response
 
     # Generate helper functions for nan_interp
     @staticmethod
@@ -305,14 +323,22 @@ class RkfAnalysis(object):
             pass
 
         ax1 = fig.add_subplot(sub)
-        ax1.plot(x, y1)
+        if len(y1.shape) > 1:
+            for i in range(y1.shape[0]):
+                ax1.plot(x, y1[i, :], c=c[0])
+        else:
+            ax1.plot(x, y1, c=c[0])
         ax1.set_xlabel(xlabel)
         ax1.set_ylabel(ylabel[0], color=c[0])
         for tl in ax1.get_yticklabels():
             tl.set_color(c[0])
 
         ax2 = ax1.twinx()
-        ax2.plot(x, y2, c[1])
+        if len(y2.shape) > 1:
+            for i in range(y2.shape[0]):
+                ax2.plot(x, y2[i, :], c=c[1])
+        else:
+            ax2.plot(x, y2, c=c[1])
         ax2.set_ylabel(ylabel[1], color=c[1])
         for tl in ax2.get_yticklabels():
             tl.set_color(c[1])
@@ -329,7 +355,7 @@ class RkfAnalysis(object):
             x2 = Variable(self.pad_shift(x2.copy(), delay), name=x2.name, units=x2.units)
 
         # Plot x1 and x2 with separate y-axes
-        fig, ax = self.plotyy(self.kf_time - self.kf_time[0], x1, x2)
+        fig, ax = self.plotyy(self.kf_time - self.kf_time[0], x1, self.hpf(x2, cutoff=0.1))
 
         # Add time-offset overlay
         props = dict(boxstyle='round', facecolor='w', alpha=0.75)
@@ -386,10 +412,13 @@ class RkfAnalysis(object):
     # Plot output from calc_response
     def plot_response(self, x1, x2):
 
-        gain = self.calc_response(x1, x2)
+        gain, fft = self.calc_response(x1, x2, return_data=True)
 
-        plt.figure()
-        plt.plot([x[0] for x in gain], [x[1] for x in gain], '.')
+        fig, ax = self.plotyy(fft[0], fft[1], fft[2], xlabel='', sub=211)
+        ax[0].set_xlim([0, 1])
+
+        ax3 = fig.add_subplot(212)
+        ax3.semilogy([x[0] for x in gain], [x[1] for x in gain], '.')
 
     # Call a common set of plot functions
     def default_plots(self, var1, var2):

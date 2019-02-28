@@ -1,5 +1,4 @@
 from numpy import cos, sin, angle, conj
-from cmath import phase
 import numpy as np
 import matplotlib.pyplot as plt
 import scipy.signal as sps
@@ -22,6 +21,7 @@ class PyPLL(object):
 
         self.set_params(params)
 
+    # Initialize primary params
     def set_params(self, params):
 
         # parameters
@@ -30,6 +30,7 @@ class PyPLL(object):
         self.K = params[2]  # pll loop gain
         self._calc_params()
 
+    # Calculate secondary params
     def _calc_params(self):
 
         # generate loop filter parameters (active PI design)
@@ -54,11 +55,14 @@ class PyPLL(object):
         # Initialize state
         self.phi_hat = 0.0  # PLL's initial phase
 
+    # Step through a whole vector of input data
     def run(self, X):
 
         for x in X:
             self.step(x)
 
+    # Step forward in response to new input data
+    # Input data must be complex; real data should be preprocessed with scipy.signal.hilbert()
     def step(self, x):
 
         # compute PLL output from phase estimate

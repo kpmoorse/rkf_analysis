@@ -11,7 +11,7 @@ from rkf_analysis import RkfAnalysis
 
 class RkfMultiAnalysis(object):
 
-    def __init__(self, rs_thresh=3):
+    def __init__(self, rs_thresh=5):
 
         tkroot = tk.Tk()
         filetypes = (("ROS bag files", "*.bag"), ("all files", "*.*"))
@@ -20,12 +20,12 @@ class RkfMultiAnalysis(object):
 
         self.rs_thresh = rs_thresh
         self.rs_mdl = [0, np.inf]
-        self.inliers = np.array([]).astype(bool)
+        self.inliers = []
 
         self.cgain = np.empty((0, 2))
         self.mean_gain = np.empty((0, 2))
         self._calc_compound_gain()
-        self._calc_means()
+        self._calc_means(robust=False)
 
     # Instantiate an RkfAnalysis object for each file and extract gain arrays
     def _calc_compound_gain(self, sort=True, rtype='gain'):
@@ -38,17 +38,19 @@ class RkfMultiAnalysis(object):
         if sort:
             self.cgain = self.cgain[np.argsort(self.cgain[:, 0])]
 
+    # Calculate the per-frequency gain means with RANSAC outlier-rejection
     def _calc_means(self, robust=True):
 
+        self.inliers = np.array([]).astype(bool)
         if ransac:
             meanstd = lambda data: [np.mean(data), np.std(data)]
             azscore = lambda data, mdl: np.abs((data-mdl[0])/mdl[1])
             mse = lambda data, mdl: np.mean((data - mdl[0])**2)
 
-        for freq in np.unique(self.cgain[:, 0]):
+        for freq in tqdm(np.unique(self.cgain[:, 0])):
             data = self.cgain[self.cgain[:, 0] == freq, 1]
             if robust:
-                mdl = ransac(data, meanstd, azscore, mse, thresh=self.rs_thresh)
+                mdl = ransac(data, meanstd, azscore, mse, thresh=self.rs_thresh, max_iters=1e4)
                 mean = mdl[0]
                 self.inliers = np.append(self.inliers, np.abs(data-mdl[0])/mdl[1] < self.rs_thresh)
             else:
@@ -77,40 +79,6 @@ class RkfMultiAnalysis(object):
         plt.legend(['Inliers', 'Outliers', 'Model mean'])
         plt.xlabel('Frequency (Hz)')
         plt.ylabel('Gain (a.u.)')
-
-    # @staticmethod
-    # def ransac(data, mdl_fun, dat_cost, mdl_cost, d=None, thresh=1, max_iters=int(1e4)):
-    #
-    #     best_mdl = []
-    #     best_err = np.inf
-    #
-    #     if not d:
-    #         d = int(len(data) / 2)
-    #
-    #     for i in range(max_iters):
-    #
-    #         # Select a random subset of data (hypothetical inliers)
-    #         hin = np.random.choice([True, False], data.shape[0])
-    #         while np.sum(hin) < 2:
-    #             hin[np.random.randint(len(hin))] = True  # Ensure hin has at least 2 points (std > 0)
-    #
-    #         # Generate a tentative model
-    #         mdl = mdl_fun(data[hin])
-    #
-    #         # Find points that agree with the model (consensus set)
-    #         cset = np.zeros(hin.shape).astype(bool)
-    #         cset[np.bitwise_and(~hin, dat_cost(data, mdl) < thresh)] = True
-    #
-    #         # Combine hin and cset, recalculate model, and check against current best
-    #         if np.sum(cset) >= d:
-    #             hin = np.bitwise_or(hin, cset)
-    #             mdl = mdl_fun(data[hin])
-    #             err = mdl_cost(data[hin], mdl)
-    #             if err < best_err:
-    #                 best_mdl = mdl
-    #                 best_err = err
-    #
-    #     return best_mdl
 
 
 rkm = RkfMultiAnalysis()
