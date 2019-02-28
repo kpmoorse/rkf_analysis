@@ -56,6 +56,9 @@ class RkfAnalysis(object):
         self.right_angle = Variable(self.kf_time.copy(), name="Right Wing Angle", units="deg")
         self.head_angle = Variable(self.kf_time.copy(), name="Head Angle", units="deg")
         self.ab_angle = Variable(self.kf_time.copy(), name="Abdomen Angle", units="deg")
+        self.wing_diff = Variable(self.kf_time.copy(), name="Abdomen Angle", units="deg")
+
+        self.kf_vars = [self.left_angle, self.right_angle, self.head_angle, self.ab_angle, self.wing_diff]
 
         self.as_time = Variable(np.zeros(self.msg_count["/autostep/motion_data"]),
                                 name="Autostep Time", units="sec")
@@ -128,16 +131,14 @@ class RkfAnalysis(object):
 
                 ixfc += 1
 
-        self.kf_dt = np.mean(np.diff(self.kf_time))
-
     # Calculate derived parameters
     def _calc_vars(self, w=11):
 
-        self.left_angle[:] = self.sliding_average(self.left_angle, w)
-        self.right_angle[:] = self.sliding_average(self.right_angle, w)
-        self.head_angle[:] = self.sliding_average(self.head_angle, w)
-        self.ab_angle[:] = self.sliding_average(self.ab_angle, w)
-        self.wing_diff = Variable(self.left_angle - self.right_angle, name="Wingbeat Difference (L-R)", units="deg")
+        self.kf_dt = np.mean(np.diff(self.kf_time))
+        self.wing_diff[:] = self.left_angle - self.right_angle
+
+        for var in self.kf_vars:
+            var[:] = self.sliding_average(var, w)
 
         self.ang_vel[:] = self.smooth_deriv(self.as_time, self.ang_pos)
 
@@ -152,6 +153,12 @@ class RkfAnalysis(object):
 
     # Resample autostep variables to Kinefly time vector
     def _resample_params(self):
+
+        # Resample Kinefly variables to evenly-spaced time bins
+        t = np.arange(len(self.kf_time)) * np.mean(np.diff(self.kf_time)) + self.kf_time[0]
+        for var in self.kf_vars:
+            var[:] = self.resample(self.kf_time, var, t, kind='linear')
+        self.kf_time[:] = t
 
         self.ang_pos = Variable(self.resample(self.as_time, self.ang_pos, self.kf_time), name="Angular Position", units="deg")
         self.ang_vel = Variable(self.resample(self.as_time, self.ang_vel, self.kf_time), name="Angular Velocity", units="deg/sec")

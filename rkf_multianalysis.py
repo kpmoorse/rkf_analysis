@@ -42,6 +42,8 @@ class RkfMultiAnalysis(object):
     def _calc_means(self, robust=True):
 
         self.inliers = np.array([]).astype(bool)
+        self.mean_gain = np.empty((0, 2))
+
         if ransac:
             meanstd = lambda data: [np.mean(data), np.std(data)]
             azscore = lambda data, mdl: np.abs((data-mdl[0])/mdl[1])
@@ -54,7 +56,7 @@ class RkfMultiAnalysis(object):
                 mean = mdl[0]
                 self.inliers = np.append(self.inliers, np.abs(data-mdl[0])/mdl[1] < self.rs_thresh)
             else:
-                mean = np.mean(data)
+                mean = np.nanmean(data)
                 self.inliers = np.append(self.inliers, np.ones(data.shape).astype(bool))
             self.mean_gain = np.append(self.mean_gain, [[freq, mean]], axis=0)
 
@@ -64,11 +66,12 @@ class RkfMultiAnalysis(object):
         c = plt.rcParams['axes.prop_cycle'].by_key()['color']
         comp = self.cgain
         mean = self.mean_gain
+        norm = np.nanmax(self.mean_gain[:, 1])
 
         # inliers = np.abs(comp[:, 1] - self.rs_mdl[0]) / self.rs_mdl[1] < self.rs_thresh
         if normalize:
-            comp[:, 1] = comp[:, 1] / np.max(self.mean_gain[:, 1])
-            mean[:, 1] = mean[:, 1] / np.max(self.mean_gain[:, 1])
+            comp[:, 1] = comp[:, 1] / norm
+            mean[:, 1] = mean[:, 1] / norm
 
         plt.plot(comp[self.inliers, 0], comp[self.inliers, 1], '.')
         plt.plot(comp[~self.inliers, 0], comp[~self.inliers, 1], '.', markerfacecolor='none', c=c[0])

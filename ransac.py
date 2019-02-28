@@ -28,7 +28,7 @@ import matplotlib.pyplot as plt
 def ransac(data, mdl_fun, ptw_cost, glb_cost, d=None, thresh=1, max_iters=int(1e4)):
 
     if type(max_iters) != int:
-        warnings.warn('\'max_iters\' has type %s; converting to int' % str(type(max_iters)))
+        warnings.warn('\'max_iters\' has type %s; converting to int' % type(max_iters).__name__)
         max_iters = int(max_iters)
 
     # Initialize best model parameters
