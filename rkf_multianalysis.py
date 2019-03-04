@@ -33,7 +33,8 @@ class RkfMultiAnalysis(object):
         for file in tqdm(self.file_list):
 
             rka = RkfAnalysis(file)
-            self.cgain = np.concatenate((self.cgain, np.array(rka.calc_response(rka.ang_pos, rka.wing_diff, rtype=rtype))), axis=0)
+            # self.cgain = np.concatenate((self.cgain, np.array(rka.calc_response(rka.ang_pos, rka.wing_diff, rtype=rtype))), axis=0)
+            self.cgain = np.concatenate((self.cgain, np.array(rka.calc_sinfit(rka.ang_pos, rka.head_angle, rtype=rtype))), axis=0)
 
         if sort:
             self.cgain = self.cgain[np.argsort(self.cgain[:, 0])]
@@ -52,7 +53,7 @@ class RkfMultiAnalysis(object):
         for freq in tqdm(np.unique(self.cgain[:, 0])):
             data = self.cgain[self.cgain[:, 0] == freq, 1]
             if robust:
-                mdl = ransac(data, meanstd, azscore, mse, thresh=self.rs_thresh, max_iters=1e4)
+                mdl = ransac(data, meanstd, azscore, mse, thresh=self.rs_thresh, max_iters=5e4)
                 mean = mdl[0]
                 self.inliers = np.append(self.inliers, np.abs(data-mdl[0])/mdl[1] < self.rs_thresh)
             else:
@@ -64,19 +65,20 @@ class RkfMultiAnalysis(object):
     def plot_gain(self, normalize=True):
 
         c = plt.rcParams['axes.prop_cycle'].by_key()['color']
-        comp = self.cgain
-        mean = self.mean_gain
-        norm = np.nanmax(self.mean_gain[:, 1])
+        comp = self.cgain.copy()
+        mean = self.mean_gain.copy()
 
         # inliers = np.abs(comp[:, 1] - self.rs_mdl[0]) / self.rs_mdl[1] < self.rs_thresh
         if normalize:
+            norm = np.nanmax(self.mean_gain[:, 1])
             comp[:, 1] = comp[:, 1] / norm
             mean[:, 1] = mean[:, 1] / norm
 
         plt.plot(comp[self.inliers, 0], comp[self.inliers, 1], '.')
         plt.plot(comp[~self.inliers, 0], comp[~self.inliers, 1], '.', markerfacecolor='none', c=c[0])
         plt.plot(mean[:, 0], mean[:, 1], '.-', markersize=12, markerfacecolor='none', c=c[1])
-        plt.ylim([-0.1, np.max(comp[self.inliers, 0])*1.1])
+        maxlim = np.max(comp[self.inliers, 1])
+        plt.ylim([maxlim*-0.1, maxlim*1.1])
 
         plt.title('Post-RANSAC Frequency Response Curve')
         plt.legend(['Inliers', 'Outliers', 'Model mean'])
@@ -85,4 +87,4 @@ class RkfMultiAnalysis(object):
 
 
 rkm = RkfMultiAnalysis()
-rkm.plot_gain()
+rkm.plot_gain(normalize=False)

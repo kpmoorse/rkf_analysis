@@ -6,6 +6,7 @@ import os
 import Tkinter as tk
 import tkFileDialog as tkf
 import scipy.signal as sps
+import scipy.optimize as spo
 from py_pll import PyPLL
 
 
@@ -160,19 +161,20 @@ class RkfAnalysis(object):
             var[:] = self.resample(self.kf_time, var, t, kind='linear')
         self.kf_time[:] = t
 
-        self.ang_pos = Variable(self.resample(self.as_time, self.ang_pos, self.kf_time), name="Angular Position", units="deg")
-        self.ang_vel = Variable(self.resample(self.as_time, self.ang_vel, self.kf_time), name="Angular Velocity", units="deg/sec")
+        self.ang_pos = Variable(self.resample(self.as_time, self.ang_pos, self.kf_time, extrapolate=False), name="Angular Position", units="deg")
+        self.ang_vel = Variable(self.resample(self.as_time, self.ang_vel, self.kf_time, extrapolate=False), name="Angular Velocity", units="deg/sec")
         if self.fc_valid: self.freq_trace = Variable(self.resample(self.fc_time, self.frequency, self.kf_time, kind='previous'), name="Autostep Frequency", units="Hz")
 
     # Initialize and call cubic spline for resampling
     @staticmethod
-    def resample(x1, y1, x2, kind='spline'):
+    def resample(x1, y1, x2, kind='spline', extrapolate=True):
 
         if kind == 'spline':
             spline = spi.CubicSpline(x1, y1)
-            y2 = spline.__call__(x2, extrapolate=False)
+            y2 = spline.__call__(x2, extrapolate=extrapolate)
         else:
-            interp = spi.interp1d(x1, y1, kind=kind, bounds_error=False, fill_value='extrapolate')
+            fill_value = "extrapolate" if extrapolate else []
+            interp = spi.interp1d(x1, y1, kind=kind, bounds_error=False, fill_value=fill_value)
             y2 = interp(x2)
         return y2
 
@@ -286,19 +288,23 @@ class RkfAnalysis(object):
             n_fft = int(2 ** np.ceil(np.log(l) / np.log(2))) * pad_factor
 
             fftfreq = np.fft.fftfreq(n_fft, np.diff(self.kf_time[:2]))
-            xx1 = x1[self.rng][freq_rng] - np.mean(x1[self.rng][freq_rng])
-            xx2 = x2[self.rng][freq_rng] - np.mean(x2[self.rng][freq_rng])
-            sp1 = np.abs(np.fft.fft(xx1 * np.bartlett(l), n=n_fft))**2
-            sp2 = np.abs(np.fft.fft(xx2 * np.bartlett(l), n=n_fft))**2
+            xx1 = self.nan_interp(x1[self.rng][freq_rng]) - np.nanmean(x1[self.rng][freq_rng])
+            xx2 = self.nan_interp(x2[self.rng][freq_rng]) - np.nanmean(x2[self.rng][freq_rng])
+            sp1 = np.abs(np.fft.fft(xx1 * np.hanning(l), n=n_fft))**2
+            sp2 = np.abs(np.fft.fft(xx2 * np.hanning(l), n=n_fft))**2
 
             # ctr = np.argmin(np.abs(fftfreq - freq))
-            ctr = np.argmax(sp1[:n_fft/2])
-            g_rng = np.arange(ctr - w, ctr + w + 1)
+            peaks1 = self.find_peaks(sp1[:n_fft/2], thresh=max(sp1[:n_fft/2]) / 4)[0]
+            ctr1 = peaks1[0]
+            peaks2 = self.find_peaks(sp2[:n_fft/2], thresh=max(sp2[:n_fft/2]) / 4)[0]
+            ctr2 = peaks2[np.argmin(np.abs(ctr1 - peaks2))]
+            rng1 = np.arange(ctr1 - w, ctr1 + w + 1)
+            rng2 = np.arange(ctr2 - w, ctr2 + w + 1)
 
             if rtype == 'gain':
-                response.append([freq, np.mean(sp2[:n_fft/2][g_rng] / sp1[:n_fft/2][g_rng])])
+                response.append([freq, np.mean(sp2[:n_fft/2][rng2] / sp1[:n_fft/2][rng1])])
             elif rtype == 'magnitude':
-                response.append([freq, np.mean(sp2[:n_fft/2][g_rng])])
+                response.append([freq, np.mean(sp2[:n_fft/2][rng2])])
             else:
                 print("Response type not recognized")
 
@@ -311,6 +317,76 @@ class RkfAnalysis(object):
         if return_data:
             return response, (fftfreq[:n_fft/2], sum1[:, :n_fft/2], sum2[:, :n_fft/2])
         else: return response
+
+    def calc_sinfit(self, y1, y2, rtype='gain'):
+
+        c = plt.rcParams['axes.prop_cycle'].by_key()['color']
+
+        response = []
+
+        for i, freq in enumerate(self.frequency):
+
+            freq_rng = self.freq_trace[self.rng] == freq
+
+            x = self.kf_time
+            xx = x[self.rng][freq_rng]
+
+            yy1 = self.nan_interp(y1[self.rng][freq_rng]) - np.nanmean(y1[self.rng][freq_rng])
+            yy2 = self.nan_interp(y2[self.rng][freq_rng]) - np.nanmean(y2[self.rng][freq_rng])
+
+            # Fit sinusoid as a sum of sin and cos (to avoid problematic phase-fitting)
+            def sinusoid(x, a, b):
+                return a * np.sin(2*np.pi*freq*x) + b * np.cos(2*np.pi*freq*x)
+
+            sinfit1 = spo.curve_fit(sinusoid, xx, yy1, p0=[2.**(-0.5) * np.max(np.abs(yy1))]*2)[0]
+            sinfit2 = spo.curve_fit(sinusoid, xx, yy2, p0=[2.**(-0.5) * np.max(np.abs(yy2))]*2)[0]
+
+            # plt.clf()
+            # plt.subplot(211)
+            # plt.plot(xx, yy1, '.', xx, sinusoid(xx, *sinfit1))
+            # plt.subplot(212)
+            # plt.plot(xx, yy2, '.', xx, sinusoid(xx, *sinfit2))
+            # plt.pause(3)
+
+            if rtype == 'gain':
+                response.append([freq, np.linalg.norm(sinfit2) / np.linalg.norm(sinfit1)])
+            elif rtype == 'magnitude':
+                response.append([freq, np.linalg.norm(sinfit2)])
+            else:
+                print("Response type not recognized")
+
+        return response
+
+    def find_peaks(self, y, thresh=0, sort=True):
+
+        peaks = np.array([])
+        mags = []
+        maxima, minima = self.find_extrema(y, 3, type="max"), self.find_extrema(y, 3, type="min")
+        for peak in maxima:
+            left = np.max(minima[minima < peak]) if np.any(minima < peak) else 0
+            right = np.min(minima[minima > peak]) if np.any(minima > peak) else len(y) - 1
+            magnitude = max([y[peak] - y[left], y[peak] - y[right]])
+            if magnitude > thresh:
+                peaks = np.append(peaks, peak)
+                mags = np.append(mags, magnitude)
+
+        if sort:
+            ix = np.argsort(mags)
+            peaks = peaks[ix]
+            mags = mags[ix]
+
+        return peaks.astype(int), mags
+
+    @staticmethod
+    def find_extrema(y, w, type="max"):
+
+        signcheck = {"max": 1, "min": -1}
+        sign = np.sign(np.diff(y)) == signcheck[type]
+        left = np.sum(np.concatenate([sign[None, i:-(2*w - i)] for i in range(w)], axis=0), axis=0)
+        right = np.sum(np.concatenate([~sign[None, (w + i):-(w - i)] for i in range(w)], axis=0), axis=0)
+        extrema = np.array(np.where(np.bitwise_and(left == w, right == w))) + w
+
+        return extrema[0]
 
     # Generate helper functions for nan_interp
     @staticmethod
@@ -398,8 +474,9 @@ class RkfAnalysis(object):
 
         # Calculate Fourier transforms on Bartlett-windowed data
         freq = np.fft.fftfreq(n_fft, np.diff(self.kf_time[:2]))
-        sp1 = np.abs(np.fft.fft(x1[self.rng][~np.isnan(x1[self.rng])] * np.bartlett(l), n=n_fft))**2
-        sp2 = np.abs(np.fft.fft((self.nan_interp(x2[self.rng]) - np.mean(x2[self.rng])) * np.bartlett(l), n=n_fft))**2
+        # sp1 = np.abs(np.fft.fft(x1[self.rng][~np.isnan(x1[self.rng])] * np.bartlett(l), n=n_fft))**2
+        sp1 = np.abs(np.fft.fft((self.nan_interp(x1[self.rng]) - np.nanmean(x1[self.rng])) * np.bartlett(l), n=n_fft))**2
+        sp2 = np.abs(np.fft.fft((self.nan_interp(x2[self.rng]) - np.nanmean(x2[self.rng])) * np.bartlett(l), n=n_fft))**2
 
         gain = np.abs(sp2)/np.abs(sp1)
         lim = np.percentile(gain, 90)
@@ -427,6 +504,11 @@ class RkfAnalysis(object):
         ax3 = fig.add_subplot(212)
         ax3.semilogy([x[0] for x in gain], [x[1] for x in gain], '.')
 
+    def plot_sinresponse(self, x1, x2):
+
+        gain = self.calc_sinfit(x1, x2)
+        plt.plot([x[0] for x in gain], [x[1] for x in gain], '.')
+
     # Call a common set of plot functions
     def default_plots(self, var1, var2):
 
@@ -438,5 +520,6 @@ class RkfAnalysis(object):
 if __name__ == '__main__':
 
     rka = RkfAnalysis("/home/dickinsonlab/git/rkf_analysis/rosbag_data")
-    rka.default_plots(rka.ang_vel, rka.wing_diff)
-    # gain = rka.plot_response(rka.ang_vel, rka.wing_diff)
+    # rka.default_plots(rka.ang_vel, rka.head_angle)
+    # gain = rka.plot_response(rka.ang_vel, rka.head_angle)
+    rka.plot_sinresponse(rka.ang_vel, rka.head_angle)
