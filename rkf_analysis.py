@@ -341,13 +341,6 @@ class RkfAnalysis(object):
             sinfit1 = spo.curve_fit(sinusoid, xx, yy1, p0=[2.**(-0.5) * np.max(np.abs(yy1))]*2)[0]
             sinfit2 = spo.curve_fit(sinusoid, xx, yy2, p0=[2.**(-0.5) * np.max(np.abs(yy2))]*2)[0]
 
-            # plt.clf()
-            # plt.subplot(211)
-            # plt.plot(xx, yy1, '.', xx, sinusoid(xx, *sinfit1))
-            # plt.subplot(212)
-            # plt.plot(xx, yy2, '.', xx, sinusoid(xx, *sinfit2))
-            # plt.pause(3)
-
             if rtype == 'gain':
                 response.append([freq, np.linalg.norm(sinfit2) / np.linalg.norm(sinfit1)])
             elif rtype == 'magnitude':

@@ -61,14 +61,6 @@ def ransac(data, mdl_fun, ptw_cost, glb_cost, d=None, thresh=1, max_iters=int(1e
                 best_mdl = mdl
                 best_err = err
 
-                # plt.clf()
-                # plt.plot(ix[hin], data[hin], '.')
-                # plt.plot(ix[~hin], data[~hin], '.')
-                # plt.axhline(mdl[0])
-                # plt.axhline(mdl[0] - thresh*mdl[1], linestyle='--')
-                # plt.axhline(mdl[0] + thresh*mdl[1], linestyle='--')
-                # plt.pause(0.01)
-
     return best_mdl
 
 

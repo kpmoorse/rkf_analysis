@@ -12,12 +12,17 @@ from rkf_analysis import RkfAnalysis
 
 class RkfMultiAnalysis(object):
 
-    def __init__(self, rs_thresh=5):
+    def __init__(self, rs_thresh=5, file_list=None):
 
         tkroot = tk.Tk()
         filetypes = (("ROS bag files", "*.bag"), ("all files", "*.*"))
-        self.file_list = tkf.askopenfilenames(initialdir=os.getcwd(), filetypes=filetypes)
+        if not file_list:
+            file_list = tkf.askopenfilenames(initialdir=os.getcwd(), filetypes=filetypes)
+        elif (type(file_list) == str) and os.path.isdir(file_list):
+            file_list = tkf.askopenfilenames(initialdir=file_list, filetypes=filetypes)
         tkroot.destroy()
+
+        self.file_list = file_list
 
         self.rs_thresh = rs_thresh
         self.rs_mdl = [0, np.inf]
@@ -51,7 +56,8 @@ class RkfMultiAnalysis(object):
             azscore = lambda data, mdl: np.abs((data-mdl[0])/mdl[1])
             mse = lambda data, mdl: np.mean((data - mdl[0])**2)
 
-        for freq in tqdm(np.unique(self.cgain[:, 0])):
+        # for freq in tqdm(np.unique(self.cgain[:, 0])):
+        for freq in np.unique(self.cgain[:, 0]):
             data = self.cgain[self.cgain[:, 0] == freq, 1]
             if robust:
                 mdl = ransac(data, meanstd, azscore, mse, thresh=self.rs_thresh, max_iters=5e4)
@@ -93,6 +99,6 @@ class RkfMultiAnalysis(object):
         plt.xlabel('Frequency (Hz)')
         plt.ylabel('Gain (a.u.)')
 
-
-rkm = RkfMultiAnalysis()
-rkm.plot_gain(normalize=False, raw=False)
+if __name__ == '__main__':
+    rkm = RkfMultiAnalysis()
+    rkm.plot_gain(normalize=False, raw=False)
