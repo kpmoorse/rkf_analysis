@@ -40,8 +40,9 @@ class RkfMetaAnalysis(object):
         plt.title('Frequency Response Curves')
         plt.xlabel('Frequency (Hz)')
         plt.ylabel('Gain')
-        plt.legend(['GtACR, No Light', 'GtACR, With Light'])
+        plt.legend(['GtACR - No Light', 'GtACR - With Light'])
 
 
-rkmeta = RkfMetaAnalysis()
-rkmeta.plot_data()
+if __name__ == '__main__':
+    rkmeta = RkfMetaAnalysis()
+    rkmeta.plot_data()

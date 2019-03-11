@@ -2,3 +2,4 @@
 *.png
 /rosbag_data/*
 /example_plots/*
+/temp/*

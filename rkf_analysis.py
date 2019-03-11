@@ -51,7 +51,7 @@ class RkfAnalysis(object):
         # Initialize data variables with metadata
         self.kf_time = Variable(np.zeros(self.msg_count["/kinefly/flystate"]),
                                 name="Kinefly Time", units="sec")
-        self.kf_dt = []
+        self.kf_dt = 0
 
         self.left_angle = Variable(self.kf_time.copy(), name="Left Wing Angle", units="deg")
         self.right_angle = Variable(self.kf_time.copy(), name="Right Wing Angle", units="deg")
@@ -84,7 +84,8 @@ class RkfAnalysis(object):
         self.topics = self.bag.get_type_and_topic_info()[1].keys()
         self.data_is_valid = True
         topic_list = ["/kinefly/flystate", "/autostep/motion_data"]
-        if self.fc_valid: topic_list.append(self.fc_topic)
+        if self.fc_valid:
+            topic_list.append(self.fc_topic)
 
         for topic in topic_list:
             if topic not in self.topics:
@@ -161,9 +162,13 @@ class RkfAnalysis(object):
             var[:] = self.resample(self.kf_time, var, t, kind='linear')
         self.kf_time[:] = t
 
-        self.ang_pos = Variable(self.resample(self.as_time, self.ang_pos, self.kf_time, extrapolate=False), name="Angular Position", units="deg")
-        self.ang_vel = Variable(self.resample(self.as_time, self.ang_vel, self.kf_time, extrapolate=False), name="Angular Velocity", units="deg/sec")
-        if self.fc_valid: self.freq_trace = Variable(self.resample(self.fc_time, self.frequency, self.kf_time, kind='previous'), name="Autostep Frequency", units="Hz")
+        self.ang_pos = Variable(self.resample(self.as_time, self.ang_pos, self.kf_time, extrapolate=False),
+                                name="Angular Position", units="deg")
+        self.ang_vel = Variable(self.resample(self.as_time, self.ang_vel, self.kf_time, extrapolate=False),
+                                name="Angular Velocity", units="deg/sec")
+        if self.fc_valid:
+            self.freq_trace = Variable(self.resample(self.fc_time, self.frequency, self.kf_time, kind='previous'),
+                                       name="Autostep Frequency", units="Hz")
 
     # Initialize and call cubic spline for resampling
     @staticmethod
@@ -214,7 +219,8 @@ class RkfAnalysis(object):
             rail_lo = freq[freq_list[-1][0]+1:] - freq_list[-1][1] + (per / 2 + hys)
             zc = np.concatenate((np.where(np.abs(np.diff(np.sign(rail_hi))))[0],
                                  np.where(np.abs(np.diff(np.sign(rail_lo))))[0]))
-            if len(zc) == 0: break
+            if len(zc) == 0:
+                break
 
             zc = int(np.min(zc) + freq_list[-1][0] + 2)
 
@@ -234,13 +240,13 @@ class RkfAnalysis(object):
         # xc = abs(xc * window)  # often selects the wrong peak due to noise
 
         m = np.argmax(xc)
-        l = len(xc)
-        dt = m - (l-1)/2
+        length = len(xc)
+        dt = m - (length-1)/2
 
         return dt
 
     # Calculate the nth derivative and apply n+1 smoothing filters
-    def smooth_deriv(self, x, y, n=1, N=5):
+    def smooth_deriv(self, x, y, n=1, w=5):
 
         deriv = y.copy()
 
@@ -249,21 +255,21 @@ class RkfAnalysis(object):
             deriv = (deriv[2:] - deriv[:-2]) / (x[2:] - x[:-2])
             deriv = np.pad(deriv, 1, "constant")
 
-        # Apply n+1 smoothing filters of width N
+        # Apply n+1 smoothing filters of width w
         for i in range(n+1):
-            deriv = self.sliding_average(deriv, N)
+            deriv = self.sliding_average(deriv, w)
 
         return deriv
 
     # Apply a smoothing filter, padding with edge values
-    def sliding_average(self, x, N):
+    def sliding_average(self, x, n):
 
-        assert N % 2 == 1
+        assert n % 2 == 1
         vec = self.nan_interp(x)
         vec = np.cumsum(vec, dtype=float)
-        vec[N:] = vec[N:] - vec[:-N]
-        vec = vec[N-1:] / N
-        return np.pad(vec, (N-1)/2, "edge")
+        vec[n:] = vec[n:] - vec[:-n]
+        vec = vec[n-1:] / n
+        return np.pad(vec, (n-1)/2, "edge")
 
     # Linearly interpolate all NaN values
     def nan_interp(self, y):
@@ -284,14 +290,14 @@ class RkfAnalysis(object):
 
             freq_rng = self.freq_trace[self.rng] == freq
 
-            l = sum(freq_rng)
-            n_fft = int(2 ** np.ceil(np.log(l) / np.log(2))) * pad_factor
+            length = np.sum(freq_rng)
+            n_fft = int(2 ** np.ceil(np.log(length) / np.log(2))) * pad_factor
 
             fftfreq = np.fft.fftfreq(n_fft, np.diff(self.kf_time[:2]))
             xx1 = self.nan_interp(x1[self.rng][freq_rng]) - np.nanmean(x1[self.rng][freq_rng])
             xx2 = self.nan_interp(x2[self.rng][freq_rng]) - np.nanmean(x2[self.rng][freq_rng])
-            sp1 = np.abs(np.fft.fft(xx1 * np.hanning(l), n=n_fft))**2
-            sp2 = np.abs(np.fft.fft(xx2 * np.hanning(l), n=n_fft))**2
+            sp1 = np.abs(np.fft.fft(xx1 * np.hanning(length), n=n_fft))**2
+            sp2 = np.abs(np.fft.fft(xx2 * np.hanning(length), n=n_fft))**2
 
             # ctr = np.argmin(np.abs(fftfreq - freq))
             peaks1 = self.find_peaks(sp1[:n_fft/2], thresh=max(sp1[:n_fft/2]) / 4)[0]
@@ -318,11 +324,14 @@ class RkfAnalysis(object):
             return response, (fftfreq[:n_fft/2], sum1[:, :n_fft/2], sum2[:, :n_fft/2])
         else: return response
 
-    def calc_sinfit(self, y1, y2, rtype='gain'):
+    def calc_sinfit(self, y1, y2, rtype='gain', return_rsq=True):
+
+        assert self.fc_valid, "Frequency counter is missing from bag file; response cannot be calculated"
 
         c = plt.rcParams['axes.prop_cycle'].by_key()['color']
 
         response = []
+        rsq = []
 
         for i, freq in enumerate(self.frequency):
 
@@ -341,6 +350,8 @@ class RkfAnalysis(object):
             sinfit1 = spo.curve_fit(sinusoid, xx, yy1, p0=[2.**(-0.5) * np.max(np.abs(yy1))]*2)[0]
             sinfit2 = spo.curve_fit(sinusoid, xx, yy2, p0=[2.**(-0.5) * np.max(np.abs(yy2))]*2)[0]
 
+            rsq.append(self.rsq(yy2, sinusoid(xx, *sinfit2)))
+
             if rtype == 'gain':
                 response.append([freq, np.linalg.norm(sinfit2) / np.linalg.norm(sinfit1)])
             elif rtype == 'magnitude':
@@ -348,7 +359,17 @@ class RkfAnalysis(object):
             else:
                 print("Response type not recognized")
 
-        return response
+        if return_rsq:
+            return response, rsq
+        else:
+            return response
+
+    def rsq(self, data, model):
+
+        ss_tot = np.sum((data - np.mean(data))**2)
+        ss_res = np.sum((data - model)**2)
+
+        return 1 - ss_res / ss_tot
 
     def find_peaks(self, y, thresh=0, sort=True):
 
@@ -506,8 +527,8 @@ class RkfAnalysis(object):
     def default_plots(self, var1, var2):
 
         self.plot_timecourse(var1, var2, xcorr=True)
-        self.plot_correlation(var1, var2, xcorr=True)
-        self.plot_fourier(var1, var2, pad_factor=2)
+        # self.plot_correlation(var1, var2, xcorr=True)
+        # self.plot_fourier(var1, var2, pad_factor=2)
 
 
 if __name__ == '__main__':
@@ -515,4 +536,5 @@ if __name__ == '__main__':
     rka = RkfAnalysis("/home/dickinsonlab/git/rkf_analysis/rosbag_data")
     # rka.default_plots(rka.ang_vel, rka.head_angle)
     # gain = rka.plot_response(rka.ang_vel, rka.head_angle)
-    rka.plot_sinresponse(rka.ang_vel, rka.head_angle)
+    # rka.plot_sinresponse(rka.ang_vel, rka.head_angle)
+    rka.calc_sinfit(rka.ang_pos, rka.head_angle, rtype='magnitude')
