@@ -8,6 +8,7 @@ import tkFileDialog as tkf
 import scipy.signal as sps
 import scipy.optimize as spo
 from py_pll import PyPLL
+import re
 
 
 # Numpy array with optional name & units metadata
@@ -57,7 +58,7 @@ class RkfAnalysis(object):
         self.right_angle = Variable(self.kf_time.copy(), name="Right Wing Angle", units="deg")
         self.head_angle = Variable(self.kf_time.copy(), name="Head Angle", units="deg")
         self.ab_angle = Variable(self.kf_time.copy(), name="Abdomen Angle", units="deg")
-        self.wing_diff = Variable(self.kf_time.copy(), name="Abdomen Angle", units="deg")
+        self.wing_diff = Variable(self.kf_time.copy(), name="Wing Angle Difference", units="deg")
 
         self.kf_vars = [self.left_angle, self.right_angle, self.head_angle, self.ab_angle, self.wing_diff]
 
@@ -324,7 +325,7 @@ class RkfAnalysis(object):
             return response, (fftfreq[:n_fft/2], sum1[:, :n_fft/2], sum2[:, :n_fft/2])
         else: return response
 
-    def calc_sinfit(self, y1, y2, rtype='gain', return_rsq=True):
+    def calc_sinfit(self, y1, y2, rtype='gain', return_rsq=True, diag_plot=False):
 
         assert self.fc_valid, "Frequency counter is missing from bag file; response cannot be calculated"
 
@@ -332,6 +333,8 @@ class RkfAnalysis(object):
 
         response = []
         rsq = []
+        title_string = re.compile('[a-zA-Z0-9_.-]+$').search(self.bag.filename).group()
+        props = dict(boxstyle='round', facecolor='w', alpha=0.75)
 
         for i, freq in enumerate(self.frequency):
 
@@ -358,6 +361,23 @@ class RkfAnalysis(object):
                 response.append([freq, np.linalg.norm(sinfit2)])
             else:
                 print("Response type not recognized")
+
+            # Plot fits of yy1 and yy2
+            if diag_plot:
+                plt.clf()
+                plt.subplot(211)
+                plt.plot(xx, yy1, '.', xx, sinusoid(xx, *sinfit1))
+                plt.title(title_string)
+                plt.ylabel(y1.label())
+
+                ax = plt.subplot(212)
+                ax.plot(xx, yy2, '.', xx, sinusoid(xx, *sinfit2))
+                plt.ylabel(y2.label())
+                plt.text(0.025, 0.075, '$R^2$ = %.03f' % rsq[-1],
+                         horizontalalignment='left',
+                         transform=ax.transAxes,
+                         bbox=props)
+                plt.waitforbuttonpress()
 
         if return_rsq:
             return response, rsq

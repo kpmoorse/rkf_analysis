@@ -45,8 +45,8 @@ class RkfMultiAnalysis(object):
 
             rka = RkfAnalysis(file)
             # self.cgain = np.concatenate((self.cgain, np.array(rka.calc_sinfit(rka.ang_vel, rka.wing_diff, rtype=rtype))), axis=0)
-            fit = rka.calc_sinfit(rka.ang_pos, rka.wing_diff, rtype=rtype)
-            # fit = rka.calc_sinfit(rka.ang_pos, rka.head_angle, rtype=rtype)
+            # fit = rka.calc_sinfit(rka.ang_pos, rka.wing_diff, rtype=rtype)
+            fit = rka.calc_sinfit(rka.ang_pos, rka.head_angle, rtype=rtype)
             self.cgain = np.concatenate((self.cgain, np.array(fit[0])), axis=0)
             self.rsq = np.append(self.rsq, np.array(fit[1]))
 
@@ -94,7 +94,8 @@ class RkfMultiAnalysis(object):
         if raw:
             if rsq:
                 plt.scatter(comp[self.inliers, 0], comp[self.inliers, 1], c=self.rsq)
-                plt.colorbar()
+                cbar = plt.colorbar()
+                cbar.set_label('Model Fit ($R^2$)')
             else:
                 plt.scatter(comp[self.inliers, 0], comp[self.inliers, 1])
             plt.plot(comp[~self.inliers, 0], comp[~self.inliers, 1], '.', markerfacecolor='none', c=c[0])
