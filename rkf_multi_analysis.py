@@ -12,7 +12,7 @@ from rkf_analysis import RkfAnalysis
 
 class RkfMultiAnalysis(object):
 
-    def __init__(self, rs_thresh=5, file_list=None, nReps=1):
+    def __init__(self, rs_thresh=5, file_list=None, nTrials=1, varnames=None, rtype='magnitude'):
 
         tkroot = tk.Tk()
         filetypes = (("ROS bag files", "*.bag"), ("all files", "*.*"))
@@ -22,20 +22,24 @@ class RkfMultiAnalysis(object):
             file_list = tkf.askopenfilenames(initialdir=file_list, filetypes=filetypes)
         tkroot.destroy()
 
-        assert len(file_list) % nReps == 0,\
-            "Number of data points must be divisible by number of repetitions"
+        assert len(file_list) % nTrials == 0,\
+            "Total number of runs must be an integer multiple of nTrials"
 
         self.file_list = file_list
+        self.varnames = varnames
+        self.varlist = []
+        self.varlabels = []
 
+        self.rtype = rtype
         self.rs_thresh = rs_thresh
         self.rs_mdl = [0, np.inf]
         self.inliers = []
-        self.nTrials = nReps
+        self.nTrials = nTrials
 
         self.cgain = np.empty((0, 2))
         self.rsq = np.empty((0, 1))
         self.stats = np.empty((0, 2))
-        self._calc_compound_gain()
+        self._calc_compound_gain(rtype=self.rtype)
         self._calc_stats(robust=False)
 
     # Instantiate an RkfAnalysis object for each file and extract gain arrays
@@ -44,11 +48,21 @@ class RkfMultiAnalysis(object):
         for file in tqdm(self.file_list):
 
             rka = RkfAnalysis(file)
-            # self.cgain = np.concatenate((self.cgain, np.array(rka.calc_sinfit(rka.ang_vel, rka.wing_diff, rtype=rtype))), axis=0)
-            # fit = rka.calc_sinfit(rka.ang_pos, rka.wing_diff, rtype=rtype)
-            fit = rka.calc_sinfit(rka.ang_pos, rka.head_angle, rtype=rtype)
+
+            if not self.varnames:
+                self.varlist = (rka.ang_pos, rka.head_angle)
+            else:
+                self.varlist = []
+                for i, var in enumerate(self.varnames):
+                    self.varlist.append(getattr(rka, var))
+
+            fit = rka.calc_sinfit(self.varlist[0], self.varlist[1], rtype=rtype)
             self.cgain = np.concatenate((self.cgain, np.array(fit[0])), axis=0)
             self.rsq = np.append(self.rsq, np.array(fit[1]))
+
+        self.varlabels = []
+        for var in self.varnames:
+            self.varlabels.append(getattr(rka, var).label())
 
         if sort:
             self.cgain = self.cgain[np.argsort(self.cgain[:, 0])]
@@ -66,20 +80,21 @@ class RkfMultiAnalysis(object):
 
         # for freq in tqdm(np.unique(self.cgain[:, 0])):
         for freq in np.unique(self.cgain[:, 0]):
-            data = self.cgain[self.cgain[:, 0] == freq, 1]
+            rundata = self.cgain[self.cgain[:, 0] == freq, 1]
+            flydata = np.mean(np.reshape(rundata, (self.nTrials, -1)), axis=0)  # Average per fly over trials
             if robust:
-                mdl = ransac(data, meanstd, azscore, mse, thresh=self.rs_thresh, max_iters=5e4)
+                mdl = ransac(flydata, meanstd, azscore, mse, thresh=self.rs_thresh, max_iters=5e4)
                 mean = mdl[0]
-                stderr = stats.sem(data[np.abs(data-mdl[0])/mdl[1] < self.rs_thresh])
-                self.inliers = np.append(self.inliers, np.abs(data-mdl[0])/mdl[1] < self.rs_thresh)
+                stderr = stats.sem(flydata[np.abs(flydata-mdl[0])/mdl[1] < self.rs_thresh])
+                self.inliers = np.append(self.inliers, np.abs(rundata-mdl[0])/mdl[1] < self.rs_thresh)
             else:
-                mean = np.nanmean(data)
-                stderr = stats.sem(data)
-                self.inliers = np.append(self.inliers, np.ones(data.shape).astype(bool))
+                mean = np.nanmean(flydata)
+                stderr = stats.sem(flydata)
+                self.inliers = np.append(self.inliers, np.ones(rundata.shape).astype(bool))
             self.stats = np.append(self.stats, [[freq, mean, stderr]], axis=0)
 
     # Plot compound gain array
-    def plot_gain(self, normalize=True, raw=True, rsq=True):
+    def plot_gain(self, normalize=True, raw=True, rsq=False):
 
         c = plt.rcParams['axes.prop_cycle'].by_key()['color']
         comp = self.cgain.copy()
@@ -99,8 +114,8 @@ class RkfMultiAnalysis(object):
             else:
                 plt.scatter(comp[self.inliers, 0], comp[self.inliers, 1])
             plt.plot(comp[~self.inliers, 0], comp[~self.inliers, 1], '.', markerfacecolor='none', c=c[0])
-        plt.errorbar(stats[:, 0], stats[:, 1], yerr=stats[:, 2],
-                     fmt='.-', capsize=5, markersize=12, markerfacecolor='none', c=c[1])
+        plt.errorbar(stats[:, 0], stats[:, 1], yerr=[2*x for x in stats[:, 2]],
+                     fmt='.-', capsize=5, markersize=12, markerfacecolor='none', c=c[1], zorder=3)
         maxlim = np.max(comp[self.inliers, 1])
         plt.ylim([maxlim*-0.1, maxlim*1.1])
 
@@ -110,9 +125,9 @@ class RkfMultiAnalysis(object):
         else:
             plt.title('Frequency Response Curve')
         plt.xlabel('Frequency (Hz)')
-        plt.ylabel('Gain (a.u.)')
+        plt.ylabel(self.varlabels[1])
 
 
 if __name__ == '__main__':
-    rkm = RkfMultiAnalysis()
+    rkm = RkfMultiAnalysis(nTrials=4, varnames=["ang_pos", "head_angle"], rtype='magnitude')
     rkm.plot_gain(normalize=False, raw=True)

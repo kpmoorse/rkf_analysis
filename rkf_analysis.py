@@ -9,9 +9,10 @@ import scipy.signal as sps
 import scipy.optimize as spo
 from py_pll import PyPLL
 import re
+import warnings
 
 
-# Numpy array with optional name & units metadata
+# Modified numpy array with optional name & units metadata
 class Variable(np.ndarray):
 
     def __new__(cls, array, dtype=None, order=None, name=None, units=None):
@@ -29,6 +30,7 @@ class RkfAnalysis(object):
     # Check data integrity, initialize variables, and call preprocessing functions
     def __init__(self, bagfile=None):
 
+        # Prompt user to specify ROS bag file and load it
         self.tkroot = tk.Tk()
         filetypes = (("ROS bag files", "*.bag"), ("all files", "*.*"))
         if not bagfile:
@@ -39,6 +41,7 @@ class RkfAnalysis(object):
 
         self.bag = rosbag.Bag(bagfile, "r")
 
+        # Check for frequency counter data
         self.fc_topic = "/freq_counter/frequency"
         self.fc_valid = self.fc_topic in self.bag.get_type_and_topic_info()[1].keys()
 
@@ -67,6 +70,7 @@ class RkfAnalysis(object):
         self.ang_pos = self.as_time.copy()
         self.ang_vel = self.as_time.copy()
 
+        # Load frequency counter data
         if self.fc_valid:
             self.fc_time = Variable(np.zeros(self.msg_count[self.fc_topic]),
                                     name="Frequency Counter Time", units="sec")
@@ -105,16 +109,19 @@ class RkfAnalysis(object):
         ixas = 0
         ixfc = 0
 
+        # Define unit conversion factor
+        rad2deg = 180 / np.pi
+
         for topic, msg, t in self.bag.read_messages():
 
             # Extract kinefly (kf) data, filling in missing data with NaN
             if topic == "/kinefly/flystate":
 
                 self.kf_time[ixkf] = t.to_sec()
-                self.left_angle[ixkf] = msg.left.angles[0] if msg.left.angles else np.nan
-                self.right_angle[ixkf] = msg.right.angles[0] if msg.right.angles else np.nan
-                self.head_angle[ixkf] = msg.head.angles[0] if msg.head.angles else np.nan
-                self.ab_angle[ixkf] = msg.abdomen.angles[0] if msg.abdomen.angles else np.nan
+                self.left_angle[ixkf] = msg.left.angles[0]*rad2deg if msg.left.angles else np.nan
+                self.right_angle[ixkf] = msg.right.angles[0]*rad2deg if msg.right.angles else np.nan
+                self.head_angle[ixkf] = msg.head.angles[0]*rad2deg if msg.head.angles else np.nan
+                self.ab_angle[ixkf] = msg.abdomen.angles[0]*rad2deg if msg.abdomen.angles else np.nan
 
                 ixkf += 1
 
@@ -147,12 +154,15 @@ class RkfAnalysis(object):
 
         self.rng = np.bitwise_and(self.as_time[0] <= self.kf_time, self.kf_time <= self.as_time[-1])
 
-    def hpf(self, data, order=5, cutoff=0.5):
+    # Apply Butterworth high-pass filter to x
+    def hpf(self, x, order=5, cutoff=0.5):
 
+        data = x.copy()
         nyquist = 1./(2 * self.kf_dt)
         self.bfilt = sps.butter(order, cutoff/nyquist, btype='highpass')
+        data[:] = sps.filtfilt(self.bfilt[0], self.bfilt[1], data)
 
-        return sps.filtfilt(self.bfilt[0], self.bfilt[1], data)
+        return data
 
     # Resample autostep variables to Kinefly time vector
     def _resample_params(self):
@@ -200,6 +210,7 @@ class RkfAnalysis(object):
 
         return y
 
+    # Apply software PLL and quantize to estimate frequency
     def parse_freq(self, x, pll_params=(0.01, 0.707, 1000), schmitt_params=None):
 
         pll = PyPLL(params=pll_params)
@@ -325,6 +336,7 @@ class RkfAnalysis(object):
             return response, (fftfreq[:n_fft/2], sum1[:, :n_fft/2], sum2[:, :n_fft/2])
         else: return response
 
+    # Calculate magnitude of sine-fit for each frequency bin
     def calc_sinfit(self, y1, y2, rtype='gain', return_rsq=True, diag_plot=False):
 
         assert self.fc_valid, "Frequency counter is missing from bag file; response cannot be calculated"
@@ -352,6 +364,12 @@ class RkfAnalysis(object):
 
             sinfit1 = spo.curve_fit(sinusoid, xx, yy1, p0=[2.**(-0.5) * np.max(np.abs(yy1))]*2)[0]
             sinfit2 = spo.curve_fit(sinusoid, xx, yy2, p0=[2.**(-0.5) * np.max(np.abs(yy2))]*2)[0]
+
+            # def sinusoid(x, A, phi):
+            #     return A * np.sin(2*np.pi*freq*x + phi)
+            #
+            # sinfit1 = spo.curve_fit(sinusoid, xx, yy1, p0=[np.max(np.abs(yy1)), 0])[0]
+            # sinfit2 = spo.curve_fit(sinusoid, xx, yy1, p0=[np.max(np.abs(yy1)), 0])[0]
 
             rsq.append(self.rsq(yy2, sinusoid(xx, *sinfit2)))
 
@@ -384,6 +402,7 @@ class RkfAnalysis(object):
         else:
             return response
 
+    # Calculate R^2 metric between data and model
     def rsq(self, data, model):
 
         ss_tot = np.sum((data - np.mean(data))**2)
@@ -391,6 +410,7 @@ class RkfAnalysis(object):
 
         return 1 - ss_res / ss_tot
 
+    # Find prominent maxima based on robust differential zero-crossings
     def find_peaks(self, y, thresh=0, sort=True):
 
         peaks = np.array([])
@@ -411,6 +431,7 @@ class RkfAnalysis(object):
 
         return peaks.astype(int), mags
 
+    # Find extrema based on robust differential zero-crossing
     @staticmethod
     def find_extrema(y, w, type="max"):
 
@@ -428,6 +449,7 @@ class RkfAnalysis(object):
 
         return np.isnan(y), lambda z: z.nonzero()[0]
 
+    # Plot two lines on the same x-axis with different y-axes
     def plotyy(self, x, y1, y2, xlabel='Time (sec)', ylabel=('', ''), sub=111):
 
         c = plt.rcParams['axes.prop_cycle'].by_key()['color']
@@ -437,6 +459,7 @@ class RkfAnalysis(object):
         try:
             ylabel = [y1.label(), y2.label()]
         except AttributeError:
+            warnings.warn('Variable labels not found')
             pass
 
         ax1 = fig.add_subplot(sub)
@@ -472,7 +495,8 @@ class RkfAnalysis(object):
             x2 = Variable(self.pad_shift(x2.copy(), delay), name=x2.name, units=x2.units)
 
         # Plot x1 and x2 with separate y-axes
-        fig, ax = self.plotyy(self.kf_time - self.kf_time[0], x1, self.hpf(x2, cutoff=0.1))
+        x2[:] = self.hpf(x2, cutoff=0.1)
+        fig, ax = self.plotyy(self.kf_time - self.kf_time[0], x1, x2)
 
         # Add time-offset overlay
         props = dict(boxstyle='round', facecolor='w', alpha=0.75)
@@ -538,6 +562,7 @@ class RkfAnalysis(object):
         ax3 = fig.add_subplot(212)
         ax3.semilogy([x[0] for x in gain], [x[1] for x in gain], '.')
 
+    # Plot the output from calc_sinfit
     def plot_sinresponse(self, x1, x2):
 
         gain = self.calc_sinfit(x1, x2)
@@ -547,14 +572,15 @@ class RkfAnalysis(object):
     def default_plots(self, var1, var2):
 
         self.plot_timecourse(var1, var2, xcorr=True)
-        # self.plot_correlation(var1, var2, xcorr=True)
-        # self.plot_fourier(var1, var2, pad_factor=2)
+        self.plot_correlation(var1, var2, xcorr=True)
+        self.plot_fourier(var1, var2, pad_factor=2)
 
 
 if __name__ == '__main__':
 
     rka = RkfAnalysis("/home/dickinsonlab/git/rkf_analysis/rosbag_data")
-    # rka.default_plots(rka.ang_vel, rka.head_angle)
-    # gain = rka.plot_response(rka.ang_vel, rka.head_angle)
+    # rka.default_plots(rka.ang_pos, rka.head_angle)
+    gain = rka.plot_response(rka.ang_pos, rka.head_angle)
     # rka.plot_sinresponse(rka.ang_vel, rka.head_angle)
     rka.calc_sinfit(rka.ang_pos, rka.head_angle, rtype='magnitude')
+    # rka.plot_response(rka.ang_pos, rka.head_angle)
