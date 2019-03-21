@@ -12,7 +12,8 @@ import re
 import warnings
 
 
-# Modified numpy array with optional name & units metadata
+# Modified numpy array with name & units metadata
+# NOTE: many methods like Variable.copy() create ndarray objects and throw away metadata
 class Variable(np.ndarray):
 
     def __new__(cls, array, dtype=None, order=None, name=None, units=None):
@@ -21,6 +22,7 @@ class Variable(np.ndarray):
         obj.units = units
         return obj
 
+    # Generate label string
     def label(self):
         return '%s (%s)' % (self.name, self.units)
 
@@ -86,12 +88,12 @@ class RkfAnalysis(object):
     # Check completeness and length of bag file
     def _check_data(self):
 
-        self.topics = self.bag.get_type_and_topic_info()[1].keys()
-        self.data_is_valid = True
         topic_list = ["/kinefly/flystate", "/autostep/motion_data"]
         if self.fc_valid:
             topic_list.append(self.fc_topic)
 
+        self.topics = self.bag.get_type_and_topic_info()[1].keys()
+        self.data_is_valid = True
         for topic in topic_list:
             if topic not in self.topics:
                 self.data_is_valid = False
@@ -164,7 +166,7 @@ class RkfAnalysis(object):
 
         return data
 
-    # Resample autostep variables to Kinefly time vector
+    # Resample all variables to common time vector
     def _resample_params(self):
 
         # Resample Kinefly variables to evenly-spaced time bins
@@ -173,6 +175,7 @@ class RkfAnalysis(object):
             var[:] = self.resample(self.kf_time, var, t, kind='linear')
         self.kf_time[:] = t
 
+        # Resample autostep & freq_counter vars to new kinefly time vector
         self.ang_pos = Variable(self.resample(self.as_time, self.ang_pos, self.kf_time, extrapolate=False),
                                 name="Angular Position", units="deg")
         self.ang_vel = Variable(self.resample(self.as_time, self.ang_vel, self.kf_time, extrapolate=False),
@@ -181,7 +184,7 @@ class RkfAnalysis(object):
             self.freq_trace = Variable(self.resample(self.fc_time, self.frequency, self.kf_time, kind='previous'),
                                        name="Autostep Frequency", units="Hz")
 
-    # Initialize and call cubic spline for resampling
+    # Initialize and call interpolation function for resampling
     @staticmethod
     def resample(x1, y1, x2, kind='spline', extrapolate=True):
 
@@ -211,6 +214,7 @@ class RkfAnalysis(object):
         return y
 
     # Apply software PLL and quantize to estimate frequency
+    # *** Deprecated ***
     def parse_freq(self, x, pll_params=(0.01, 0.707, 1000), schmitt_params=None):
 
         pll = PyPLL(params=pll_params)
@@ -241,7 +245,7 @@ class RkfAnalysis(object):
         return freq_list
 
     # Calculate cross-correlation and return centered argmax
-    # *** Does not support negative correlations
+    # *** Does not support negative correlations ***
     def xc_delay(self, x1, x2):
 
         xc = sps.correlate(self.nan_interp(x1), self.nan_interp(x2))
@@ -258,6 +262,7 @@ class RkfAnalysis(object):
         return dt
 
     # Calculate the nth derivative and apply n+1 smoothing filters
+    # Per O'Haver & Begley (1981)
     def smooth_deriv(self, x, y, n=1, w=5):
 
         deriv = y.copy()
@@ -291,6 +296,7 @@ class RkfAnalysis(object):
         return y
 
     # Calculate gain-response in each frequency bin
+    # *** Not robust; calc_sinfit is preferred ***
     def calc_response(self, x1, x2, w=2, rtype='gain', return_data=False):
 
         assert self.fc_valid, "Frequency counter is missing from bag file; response cannot be calculated"
@@ -364,12 +370,6 @@ class RkfAnalysis(object):
 
             sinfit1 = spo.curve_fit(sinusoid, xx, yy1, p0=[2.**(-0.5) * np.max(np.abs(yy1))]*2)[0]
             sinfit2 = spo.curve_fit(sinusoid, xx, yy2, p0=[2.**(-0.5) * np.max(np.abs(yy2))]*2)[0]
-
-            # def sinusoid(x, A, phi):
-            #     return A * np.sin(2*np.pi*freq*x + phi)
-            #
-            # sinfit1 = spo.curve_fit(sinusoid, xx, yy1, p0=[np.max(np.abs(yy1)), 0])[0]
-            # sinfit2 = spo.curve_fit(sinusoid, xx, yy1, p0=[np.max(np.abs(yy1)), 0])[0]
 
             rsq.append(self.rsq(yy2, sinusoid(xx, *sinfit2)))
 
